@@ -1,0 +1,30 @@
+task: continued_pretraining
+output_dir: runs/cpt/qwen25_3b_miniv2_cpt
+logging_dir: runs/cpt/qwen25_3b_miniv2_cpt/logs
+
+seed: 42
+num_train_epochs: 1
+max_steps: 3000
+save_steps: 500
+eval_steps: 500
+logging_steps: 10
+
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 16
+
+learning_rate: 2.0e-5
+weight_decay: 0.1
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+max_seq_length: 2048
+bf16: false
+fp16: true
+tf32: true
+
+gradient_checkpointing: true
+dataloader_num_workers: 4
+remove_unused_columns: false
+report_to:
+  - tensorboard

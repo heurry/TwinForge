@@ -1,0 +1,22 @@
+model_name_or_path: Qwen/Qwen2.5-3B
+tokenizer_name_or_path: Qwen/Qwen2.5-3B
+trust_remote_code: false
+torch_dtype: float16
+attn_implementation: sdpa
+use_cache: false
+gradient_checkpointing: true
+max_position_embeddings_target: 32768
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj

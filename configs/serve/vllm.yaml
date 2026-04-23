@@ -1,0 +1,10 @@
+model: Qwen/Qwen2.5-3B
+tensor_parallel_size: 2
+dtype: float16
+max_model_len: 4096
+gpu_memory_utilization: 0.90
+trust_remote_code: false
+served_model_name: qwen25-3b-miniv2
+host: 0.0.0.0
+port: 8000
+api_key: EMPTY
