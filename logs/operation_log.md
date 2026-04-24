@@ -169,3 +169,7 @@
 - 操作：更新 README 并补充仓库忽略规则，准备发布当前源码状态。
   影响文件：`README.md`、`.gitignore`、`logs/operation_log.md`
   结果：README 已改为反映当前真实项目状态、训练验证结果、DeepSpeed 主线能力和实施路线；同时将 `data/`、`model/`、`runs/`、下载日志与临时文件加入忽略规则，避免把本地数据、权重和训练产物错误推送到 GitHub。
+
+- 操作：修正 GitHub 远端并重新推送当前项目源码。
+  影响文件：`logs/operation_log.md`
+  结果：将 `origin` 从错误的 `TwinForge-.git` 修正为 `git@github.com:heurry/TwinForge.git`，随后提交当前源码快照 `61e5376`（`Build CPT pipeline and refresh project docs`）并成功推送到远端 `main` 分支；本地数据、模型目录和训练产物未纳入提交范围。
