@@ -2,14 +2,18 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import gzip
 import json
 import os
 import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 import jsonlines
 from datasets import load_dataset
+from huggingface_hub import HfApi, hf_hub_download
 from tqdm import tqdm
 
 
@@ -59,6 +63,15 @@ def normalize_wildchat_record(example: Dict[str, Any]) -> Optional[Dict[str, Any
     if "messages" in example and isinstance(example["messages"], list):
         return {"messages": example["messages"]}
     return None
+
+
+def normalize_sft_record(dataset_name: str, example: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    lowered = dataset_name.lower()
+    if "ultrachat" in lowered:
+        return normalize_ultrachat_record(example)
+    if "wildchat" in lowered:
+        return normalize_wildchat_record(example)
+    return normalize_generic_record(example)
 
 
 def normalize_gsm8k_record(example: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -111,6 +124,16 @@ def load_nonstreaming_dataset(
     return load_dataset(dataset_name, split=split)
 
 
+def load_streaming_dataset(
+    dataset_name: str,
+    subset: Optional[str],
+    split: str,
+):
+    if subset and subset != "default":
+        return load_dataset(dataset_name, subset, split=split, streaming=True)
+    return load_dataset(dataset_name, split=split, streaming=True)
+
+
 def sample_indices(n: int, k: int, seed: int) -> List[int]:
     k = min(n, k)
     rng = random.Random(seed)
@@ -119,9 +142,84 @@ def sample_indices(n: int, k: int, seed: int) -> List[int]:
     return sorted(idx[:k])
 
 
-def process_cpt_entry(entry: Dict[str, Any], raw_dir: Path, seed: int) -> None:
+def iter_jsonl_records(path: Path) -> Iterable[Dict[str, Any]]:
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+def iter_hf_repo_text_files(
+    repo_id: str,
+    paths: List[str],
+    text_field: str,
+    revision: str = "main",
+    seed: int = 42,
+) -> Iterable[Dict[str, Any]]:
+    ordered_paths = list(paths)
+    random.Random(seed).shuffle(ordered_paths)
+
+    for rel_path in ordered_paths:
+        print(f"[CPT] downloading file {repo_id}/{rel_path}")
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=rel_path,
+            repo_type="dataset",
+            revision=revision,
+        )
+        for ex in iter_jsonl_records(Path(local_path)):
+            item = normalize_text_record(ex, text_field)
+            if item is not None:
+                yield item
+
+
+def iter_hf_repo_records(
+    repo_id: str,
+    paths: List[str],
+    revision: str = "main",
+    seed: int = 42,
+) -> Iterable[Dict[str, Any]]:
+    ordered_paths = list(paths)
+    random.Random(seed).shuffle(ordered_paths)
+
+    for rel_path in ordered_paths:
+        print(f"[DATA] downloading file {repo_id}/{rel_path}")
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=rel_path,
+            repo_type="dataset",
+            revision=revision,
+        )
+        yield from iter_jsonl_records(Path(local_path))
+
+
+def resolve_hf_repo_paths(entry: Dict[str, Any]) -> List[str]:
+    if entry.get("paths"):
+        return list(entry["paths"])
+
+    prefix = entry.get("path_prefix", "")
+    suffix = entry.get("path_suffix", "")
+    revision = entry.get("revision", "main")
+
+    api = HfApi()
+    repo_files = api.list_repo_files(entry["source"], repo_type="dataset", revision=revision)
+    matched = [p for p in repo_files if p.startswith(prefix) and p.endswith(suffix)]
+
+    if not matched:
+        raise FileNotFoundError(
+            f"No dataset files matched prefix={prefix!r}, suffix={suffix!r} in {entry['source']}"
+        )
+
+    return matched
+
+
+def process_cpt_entry(entry: Dict[str, Any], raw_dir: Path, seed: int, skip_existing: bool) -> None:
     name = entry["name"]
     source = entry["source"]
+    source_type = entry.get("source_type", "hf_dataset")
     subset = entry.get("subset", None)
     split = entry.get("split", "train")
     streaming = entry.get("streaming", False)
@@ -131,7 +229,23 @@ def process_cpt_entry(entry: Dict[str, Any], raw_dir: Path, seed: int) -> None:
     out_path = raw_dir / "cpt" / f"{name}.jsonl"
     ensure_dir(str(out_path.parent))
 
+    if skip_existing and out_path.exists() and out_path.stat().st_size > 0:
+        print(f"[CPT] skip existing {name} -> {out_path}")
+        return
+
     print(f"[CPT] downloading {name} -> {out_path}")
+
+    if source_type == "hf_repo_files":
+        iterator = iter_hf_repo_text_files(
+            repo_id=source,
+            paths=resolve_hf_repo_paths(entry),
+            text_field=text_field,
+            revision=entry.get("revision", "main"),
+            seed=seed,
+        )
+        count = save_jsonl(iterator, str(out_path), max_count=max_samples)
+        print(f"[CPT] saved {count} rows for {name}")
+        return
 
     if streaming:
         iterator = iter_streaming_dataset(
@@ -158,17 +272,42 @@ def process_cpt_entry(entry: Dict[str, Any], raw_dir: Path, seed: int) -> None:
     print(f"[CPT] saved {count} rows for {name}")
 
 
-def process_sft_entry(entry: Dict[str, Any], raw_dir: Path, seed: int) -> None:
+def process_sft_entry(entry: Dict[str, Any], raw_dir: Path, seed: int, skip_existing: bool) -> None:
     name = entry["name"]
     source = entry["source"]
     subset = entry.get("subset", None)
     split = entry.get("split", "train")
     target_samples = entry.get("target_samples", None)
+    streaming = entry.get("streaming", False)
+    shuffle_buffer_size = int(entry.get("shuffle_buffer_size", min(max(target_samples or 10000, 1000), 50000)))
 
     out_path = raw_dir / "sft" / f"{name}.jsonl"
     ensure_dir(str(out_path.parent))
 
+    if skip_existing and out_path.exists() and out_path.stat().st_size > 0:
+        print(f"[SFT] skip existing {name} -> {out_path}")
+        return
+
     print(f"[SFT] downloading {name} -> {out_path}")
+
+    if streaming:
+        ds = load_streaming_dataset(source, subset, split)
+        if target_samples is not None:
+            ds = ds.shuffle(seed=seed, buffer_size=shuffle_buffer_size)
+
+        with jsonlines.open(out_path, mode="w") as writer:
+            count = 0
+            for ex in ds:
+                item = normalize_sft_record(name, ex)
+                if item is None:
+                    continue
+                writer.write(item)
+                count += 1
+                if target_samples is not None and count >= target_samples:
+                    break
+
+        print(f"[SFT] saved {count} rows for {name}")
+        return
 
     ds = load_nonstreaming_dataset(source, subset, split)
     indices = sample_indices(len(ds), target_samples or len(ds), seed)
@@ -177,12 +316,7 @@ def process_sft_entry(entry: Dict[str, Any], raw_dir: Path, seed: int) -> None:
         count = 0
         for i in tqdm(indices, desc=f"[SFT:{name}]"):
             ex = ds[i]
-            if "ultrachat" in name.lower():
-                item = normalize_ultrachat_record(ex)
-            elif "wildchat" in name.lower():
-                item = normalize_wildchat_record(ex)
-            else:
-                item = normalize_generic_record(ex)
+            item = normalize_sft_record(name, ex)
 
             if item is None:
                 continue
@@ -192,16 +326,31 @@ def process_sft_entry(entry: Dict[str, Any], raw_dir: Path, seed: int) -> None:
     print(f"[SFT] saved {count} rows for {name}")
 
 
-def process_eval_entry(entry: Dict[str, Any], raw_dir: Path) -> None:
+def process_eval_entry(entry: Dict[str, Any], raw_dir: Path, skip_existing: bool) -> None:
     name = entry["name"]
     source = entry["source"]
+    source_type = entry.get("source_type", "hf_dataset")
     subset = entry.get("subset", None)
     split = entry.get("split", "test")
 
     out_path = raw_dir / "eval" / f"{name}.jsonl"
     ensure_dir(str(out_path.parent))
 
+    if skip_existing and out_path.exists() and out_path.stat().st_size > 0:
+        print(f"[EVAL] skip existing {name} -> {out_path}")
+        return
+
     print(f"[EVAL] downloading {name} -> {out_path}")
+
+    if source_type == "hf_repo_files":
+        iterator = iter_hf_repo_records(
+            repo_id=source,
+            paths=resolve_hf_repo_paths(entry),
+            revision=entry.get("revision", "main"),
+        )
+        count = save_jsonl(iterator, str(out_path))
+        print(f"[EVAL] saved {count} rows for {name}")
+        return
 
     if name == "mmlu_mini":
         subjects = entry["subjects"]
@@ -238,6 +387,7 @@ def main():
     parser.add_argument("--manifest", type=str, default="configs/dataset_manifest.json")
     parser.add_argument("--output_root", type=str, default="data/raw")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--skip_existing", action="store_true")
     args = parser.parse_args()
 
     manifest = read_json(args.manifest)
@@ -248,19 +398,19 @@ def main():
 
     for entry in manifest["datasets"].get("cpt", []):
         try:
-            process_cpt_entry(entry, raw_dir, args.seed)
+            process_cpt_entry(entry, raw_dir, args.seed, args.skip_existing)
         except Exception as e:
             print(f"[WARN] failed on CPT dataset {entry.get('name')}: {e}")
 
     for entry in manifest["datasets"].get("sft", []):
         try:
-            process_sft_entry(entry, raw_dir, args.seed)
+            process_sft_entry(entry, raw_dir, args.seed, args.skip_existing)
         except Exception as e:
             print(f"[WARN] failed on SFT dataset {entry.get('name')}: {e}")
 
     for entry in manifest["datasets"].get("eval", []):
         try:
-            process_eval_entry(entry, raw_dir)
+            process_eval_entry(entry, raw_dir, args.skip_existing)
         except Exception as e:
             print(f"[WARN] failed on EVAL dataset {entry.get('name')}: {e}")
 

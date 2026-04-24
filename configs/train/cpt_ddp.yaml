@@ -1,18 +1,18 @@
 task: continued_pretraining
-output_dir: runs/cpt/qwen3_1_7b_miniv2_cpt_zero2
-logging_dir: runs/cpt/qwen3_1_7b_miniv2_cpt_zero2/logs
+output_dir: runs/cpt/qwen3_1_7b_miniv2_cpt_ddp
+logging_dir: runs/cpt/qwen3_1_7b_miniv2_cpt_ddp/logs
 
 seed: 42
 num_train_epochs: 1
-max_steps: 3000
-save_steps: 500
-eval_steps: 500
+max_steps: 300
+save_steps: 100
+eval_steps: 100
 logging_steps: 10
 cuda_memory_logging_steps: 10
 
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 8
 
 learning_rate: 2.0e-5
 weight_decay: 0.1
@@ -21,7 +21,7 @@ lr_scheduler_type: cosine
 
 max_seq_length: 2048
 bf16: false
-fp16: true
+fp16: false
 tf32: true
 
 gradient_checkpointing: true

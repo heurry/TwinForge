@@ -1,6 +1,6 @@
 task: sft_lora
-output_dir: runs/sft/qwen25_3b_miniv2_sft_lora
-logging_dir: runs/sft/qwen25_3b_miniv2_sft_lora/logs
+output_dir: runs/sft/qwen3_1_7b_miniv2_sft_lora
+logging_dir: runs/sft/qwen3_1_7b_miniv2_sft_lora/logs
 
 seed: 42
 num_train_epochs: 2
