@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="assets/twinforge-logo.svg" alt="TwinForge" width="560">
+  <img src="assets/twinforge-logo.svg" alt="TwinForge" width="120">
 </p>
+
+<h1 align="center">TwinForge</h1>
 
 <p align="center">
   <a href="README.md"><img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-yellow"></a>
