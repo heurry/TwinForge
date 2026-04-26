@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="assets/twinforge-logo.svg" alt="TwinForge" width="520">
-</p>
-
-<p align="center">
   <a href="README.md"><img alt="status" src="https://img.shields.io/badge/status-work%20in%20progress-yellow"></a>
   <a href="configs/serve/vllm.yaml"><img alt="serving" src="https://img.shields.io/badge/serving-vLLM-00A3E0"></a>
   <a href="src/serve/openai_client.py"><img alt="api" src="https://img.shields.io/badge/API-OpenAI--compatible-brightgreen"></a>
@@ -13,8 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>Single-node GPU LLM training and serving performance lab.</strong><br>
-  PyTorch · DeepSpeed · PEFT · vLLM · OpenAI-compatible API · RTX 3090
+  <img src="assets/twinforge-logo.svg" alt="TwinForge" width="520">
 </p>
 
 ## Latest News
