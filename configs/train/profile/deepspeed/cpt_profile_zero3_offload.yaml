@@ -1,0 +1,61 @@
+experiment_tier: profile
+experiment_name: cpt_profile_zero3_offload
+training_backend: deepspeed_zero3_offload
+benchmark_group: cpt_profile_deepspeed_fp16
+tokenized_dataset_path: data/tokenized/cpt/bench
+include_num_input_tokens_seen: all
+
+task: continued_pretraining
+output_dir: runs/cpt/profile/deepspeed/qwen3_1_7b/zero3_offload
+logging_dir: runs/cpt/profile/deepspeed/qwen3_1_7b/zero3_offload/logs
+
+seed: 42
+num_train_epochs: 1
+max_steps: 4
+save_steps: 1000
+eval_steps: 1000
+logging_steps: 1
+cuda_memory_logging_steps: 1
+
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+
+learning_rate: 2.0e-5
+weight_decay: 0.1
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+max_seq_length: 2048
+bf16: false
+fp16: true
+tf32: false
+
+gradient_checkpointing: true
+dataloader_num_workers: 0
+remove_unused_columns: false
+overwrite_output_dir: false
+save_total_limit: 1
+save_model_artifacts: false
+ddp_find_unused_parameters: false
+report_to:
+  - tensorboard
+
+torch_profiler:
+  enabled: false
+  wait: 1
+  warmup: 1
+  active: 1
+  repeat: 1
+  record_shapes: false
+  profile_memory: false
+  with_stack: false
+  with_flops: false
+  row_limit: 30
+  export_chrome_trace: false
+  output_subdir: profiling/torch
+
+deepspeed_comms_logging:
+  enabled: true
+  show_straggler: false
+  output_subdir: profiling/deepspeed

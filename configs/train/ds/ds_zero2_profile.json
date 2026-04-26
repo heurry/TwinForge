@@ -1,0 +1,39 @@
+{
+  "train_micro_batch_size_per_gpu": "auto",
+  "gradient_accumulation_steps": "auto",
+  "steps_per_print": 1,
+  "gradient_clipping": "auto",
+  "zero_optimization": {
+    "stage": 2,
+    "overlap_comm": false,
+    "contiguous_gradients": true,
+    "allgather_bucket_size": 50000000,
+    "reduce_bucket_size": 50000000
+  },
+  "wall_clock_breakdown": true,
+  "flops_profiler": {
+    "enabled": true,
+    "recompute_fwd_factor": 0.0,
+    "profile_step": 4,
+    "module_depth": 2,
+    "top_modules": 5,
+    "detailed": true,
+    "output_file": "runs/cpt/profile/deepspeed/qwen3_1_7b/zero2/profiling/deepspeed/deepspeed_flops_profile.txt"
+  },
+  "comms_logger": {
+    "enabled": true,
+    "verbose": false,
+    "prof_all": true,
+    "debug": false
+  },
+  "tensorboard": {
+    "enabled": true,
+    "output_path": "runs/cpt/profile/deepspeed/qwen3_1_7b/zero2/profiling/deepspeed/tensorboard",
+    "job_name": "zero2_profile"
+  },
+  "csv_monitor": {
+    "enabled": true,
+    "output_path": "runs/cpt/profile/deepspeed/qwen3_1_7b/zero2/profiling/deepspeed/csv",
+    "job_name": "zero2_profile"
+  }
+}

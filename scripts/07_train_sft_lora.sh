@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES=0,1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=train/common.sh
+source "${SCRIPT_DIR}/train/common.sh"
+
+cd "${ROOT_DIR}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export TOKENIZERS_PARALLELISM=false
 
-if [ -x .venv/bin/deepspeed ]; then
-  DEEPSPEED_BIN=.venv/bin/deepspeed
-else
-  DEEPSPEED_BIN=deepspeed
-fi
-
-"${DEEPSPEED_BIN}" --num_gpus=2 src/train/train_sft.py \
+DEEPSPEED_BIN="$(resolve_deepspeed_bin)"
+"${DEEPSPEED_BIN}" src/train/train_sft.py \
   --model_config configs/model/qwen3_1_7b_base.yaml \
   --train_config configs/train/sft_lora.yaml \
-  --deepspeed configs/train/deepspeed_zero2.json \
-  --dataset_config configs/dataset_manifest.json
+  --deepspeed configs/train/ds/ds_zero2_sft.json \
+  --dataset_config configs/dataset_manifest.json \
+  "$@"

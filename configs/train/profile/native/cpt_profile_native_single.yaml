@@ -1,0 +1,55 @@
+experiment_tier: profile
+experiment_name: cpt_profile_native_single
+training_backend: single_gpu
+benchmark_group: cpt_profile_native_tf32
+tokenized_dataset_path: data/tokenized/cpt/bench
+include_num_input_tokens_seen: all
+
+task: continued_pretraining
+output_dir: runs/cpt/profile/native/qwen3_1_7b/single
+logging_dir: runs/cpt/profile/native/qwen3_1_7b/single/logs
+
+seed: 42
+num_train_epochs: 1
+max_steps: 12
+save_steps: 1000
+eval_steps: 1000
+logging_steps: 1
+cuda_memory_logging_steps: 1
+
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+
+learning_rate: 2.0e-5
+weight_decay: 0.1
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+max_seq_length: 2048
+bf16: false
+fp16: false
+tf32: true
+
+gradient_checkpointing: true
+dataloader_num_workers: 2
+remove_unused_columns: false
+overwrite_output_dir: false
+save_total_limit: 1
+save_model_artifacts: false
+report_to:
+  - tensorboard
+
+torch_profiler:
+  enabled: true
+  wait: 1
+  warmup: 1
+  active: 3
+  repeat: 1
+  record_shapes: true
+  profile_memory: true
+  with_stack: false
+  with_flops: true
+  row_limit: 50
+  export_chrome_trace: true
+  output_subdir: profiling/torch

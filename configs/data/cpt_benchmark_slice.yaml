@@ -1,0 +1,9 @@
+source_path: data/tokenized/cpt/train
+output_path: data/tokenized/cpt/bench
+summary_path: data/tokenized/cpt/bench_summary.json
+indices_path: data/tokenized/cpt/bench_indices.json
+model_config: configs/model/qwen3_1_7b_base.yaml
+
+selection_strategy: head
+start_index: 0
+num_samples: 1024

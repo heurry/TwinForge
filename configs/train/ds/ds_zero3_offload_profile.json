@@ -1,0 +1,49 @@
+{
+  "train_micro_batch_size_per_gpu": "auto",
+  "gradient_accumulation_steps": "auto",
+  "steps_per_print": 1,
+  "gradient_clipping": "auto",
+  "zero_optimization": {
+    "stage": 3,
+    "overlap_comm": false,
+    "contiguous_gradients": true,
+    "reduce_bucket_size": "auto",
+    "stage3_prefetch_bucket_size": "auto",
+    "stage3_param_persistence_threshold": "auto",
+    "stage3_gather_16bit_weights_on_model_save": false,
+    "offload_optimizer": {
+      "device": "cpu",
+      "pin_memory": false
+    },
+    "offload_param": {
+      "device": "cpu",
+      "pin_memory": false
+    }
+  },
+  "wall_clock_breakdown": true,
+  "flops_profiler": {
+    "enabled": false,
+    "recompute_fwd_factor": 0.0,
+    "profile_step": 4,
+    "module_depth": 2,
+    "top_modules": 5,
+    "detailed": true,
+    "output_file": "runs/cpt/profile/deepspeed/qwen3_1_7b/zero3_offload/profiling/deepspeed/deepspeed_flops_profile.txt"
+  },
+  "comms_logger": {
+    "enabled": true,
+    "verbose": false,
+    "prof_all": true,
+    "debug": false
+  },
+  "tensorboard": {
+    "enabled": false,
+    "output_path": "runs/cpt/profile/deepspeed/qwen3_1_7b/zero3_offload/profiling/deepspeed/tensorboard",
+    "job_name": "zero3_offload_profile"
+  },
+  "csv_monitor": {
+    "enabled": false,
+    "output_path": "runs/cpt/profile/deepspeed/qwen3_1_7b/zero3_offload/profiling/deepspeed/csv",
+    "job_name": "zero3_offload_profile"
+  }
+}

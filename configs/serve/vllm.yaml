@@ -1,4 +1,4 @@
-model: model/Qwen3-1.7B
+model: runs/sft/qwen3_1_7b_miniv2_sft_merged
 tensor_parallel_size: 2
 dtype: float16
 max_model_len: 4096

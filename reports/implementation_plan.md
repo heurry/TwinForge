@@ -52,7 +52,7 @@
 
 1. 工程打通：先把每一种后端和工具真正跑起来。
 2. 受控对比：把后端、并行方式、ZeRO、TP、推理引擎放到同一套协议里对比。
-3. 优化闭环：基于对比结论继续推进长训、SFT、评测和部署，而不是凭感觉叠功能。
+3. 优化闭环：基于对比结论先推进整条链路跑通、参数搜索、SFT、评测和部署，再决定是否进入正式长训。
 
 ## DeepSpeed Capability Matrix
 
@@ -122,16 +122,29 @@
 
 `raw -> cleaned -> tokenized -> CPT -> SFT -> eval -> serving -> benchmark -> profiling`
 
+当前执行优先级更新如下：
+
+1. 先把整条链路跑通：
+   - CPT 推荐配置
+   - resume
+   - SFT / LoRA
+   - eval
+   - serving
+2. 在不进入正式长训的前提下，尽量完成关键参数的受控搜索与归因。
+3. `longtrain` 入口保留，但后置；只有当链路闭环完成且推荐参数稳定后，才进入正式长训。
+
 ## Naming Rules
 
 后续配置和脚本命名改为按职责划分，而不是按后端裸命名：
 
 - `configs/train/sanity/*.yaml`
-- `configs/train/bench/*.yaml`
+- `configs/train/bench/native/*.yaml`
+- `configs/train/bench/deepspeed/*.yaml`
 - `configs/train/opt/*.yaml`
 - `configs/train/ds/*.json`
 - `scripts/train/sanity/*.sh`
-- `scripts/train/bench/*.sh`
+- `scripts/train/bench/native/*.sh`
+- `scripts/train/bench/deepspeed/*.sh`
 - `scripts/train/opt/*.sh`
 
 如果暂不移动目录，至少文件名要满足以下规则：
@@ -139,9 +152,10 @@
 - `cpt_sanity_single.yaml`
 - `cpt_sanity_ddp.yaml`
 - `cpt_sanity_zero2.yaml`
-- `cpt_bench_single_fp16.yaml`
-- `cpt_bench_ddp_fp16.yaml`
-- `cpt_bench_zero2_fp16.yaml`
+- `native/cpt_bench_native_single.yaml`
+- `native/cpt_bench_native_ddp.yaml`
+- `deepspeed/cpt_bench_zero2.yaml`
+- `deepspeed/cpt_bench_zero3_offload.yaml`
 - `cpt_opt_zero2_longseq.yaml`
 - `cpt_opt_zero3_offload_longrun.yaml`
 
@@ -256,6 +270,12 @@ DeepSpeed 配置也按职责拆开：
 
 - 任意一次训练都能被明确归类为 `sanity / benchmark / optimized`
 
+当前进展（2026-04-24）：
+
+- 已新增 `configs/train/sanity/`、`configs/train/bench/{native,deepspeed}/`、`configs/train/ds/` 目录，并将训练配置按职责拆分
+- 已新增 `scripts/train/sanity/` 与 `scripts/train/bench/{native,deepspeed}/` 入口，旧的 `scripts/06_train_cpt*.sh` 已调整为 sanity 包装层
+- `train_cpt.py` 已新增 `train_summary.json` 输出，补齐 `train_tokens_per_second`、checkpoint 保存耗时/大小与 `resume_success`
+
 ## Phase 1
 
 阶段名称：CPT 数据链路与 benchmark 数据切片
@@ -269,6 +289,7 @@ DeepSpeed 配置也按职责拆开：
 
 - 保持现有 `raw -> cleaned -> tokenized` 链路
 - 增加 benchmark 专用数据切片：
+  - 固定切片 spec 文件
   - 固定前 `N` 个 packed sample
   - 固定采样索引
   - 固定 tokenizer 版本
@@ -276,15 +297,28 @@ DeepSpeed 配置也按职责拆开：
   - 训练全集规模
   - benchmark 切片规模
   - benchmark 切片生成规则
+  - 数据集 fingerprint
+  - tokenizer 指纹
 
 交付物：
 
+- `configs/data/cpt_benchmark_slice.yaml`
 - `data/tokenized/cpt/bench/`
 - `data/tokenized/cpt/bench_summary.json`
+- `data/tokenized/cpt/bench_indices.json`
 
 验收标准：
 
 - `single_gpu / ddp / zero / tp` 的 benchmark 都能吃同一份数据切片
+- 能从 `bench_summary.json` 和 `bench_indices.json` 还原切片规则、样本索引与 tokenizer 版本指纹
+
+当前进展（2026-04-24）：
+
+- 已新增 `scripts/04_build_cpt_benchmark_slice.py`
+- 已新增 `configs/data/cpt_benchmark_slice.yaml` 作为 benchmark slice spec
+- benchmark 默认数据切片路径已固定为 `data/tokenized/cpt/bench`
+- 已基于现有 `data/tokenized/cpt/train` 生成第一版 benchmark slice，当前规模为 `1024` 条 packed sample，并同步写出 `data/tokenized/cpt/bench_summary.json` 与 `data/tokenized/cpt/bench_indices.json`
+- `bench_summary.json` 已补充数据集 fingerprint、tokenizer 路径与 tokenizer 指纹，满足后续 benchmark 复验所需的最小追踪信息
 
 ## Phase 2
 
@@ -333,48 +367,101 @@ DeepSpeed 配置也按职责拆开：
 - `zero2` 是当前最近主线
 - `zero3_offload` 是为了回答“显存还能不能继续省”
 
-## Phase 3
+当前进展（2026-04-24）：
 
-阶段名称：Training Benchmark Track
+- 已新增 `cpt_sanity_single / ddp / zero2 / zero3_offload` 配置与脚本
+- 已补齐 `scripts/06_train_cpt_zero3_offload.sh` 兼容入口
+- `single_gpu` 与 `ddp` 的历史运行结果仍可视为已完成 sanity 验证；`zero2` 和 `zero3_offload` 的新配置待实际执行
+
+## Phase 3A
+
+阶段名称：Native Benchmark Track
 
 目标：
 
-- 在同一协议下比较 `single_gpu / ddp / zero2 / zero3_offload`
+- 在原生 Hugging Face `Trainer` 路径下比较 `single_gpu / ddp`
 
-Benchmark Family A：Data Parallel Family
+Native Family：
 
-- `bench_single_fp16`
-- `bench_ddp_fp16`
-
-Benchmark Family B：ZeRO Family
-
-- `bench_zero1_fp16`
-- `bench_zero2_fp16`
-- `bench_zero3_offload_fp16`
+- `native/cpt_bench_native_single.yaml`
+- `native/cpt_bench_native_ddp.yaml`
 
 任务：
 
-- 固定有效全局 batch
+- 固定有效全局 batch 为 `8`
 - 固定 `max_steps`
-- 固定 `fp16`
+- 固定精度族为 `fp16=false, tf32=true`
 - 固定 benchmark 数据切片
 - 固定日志与保存频率
-- 输出正式对比表
+- 输出 native family 对比表
 
 必须回答的问题：
 
 1. DDP 相比单卡，吞吐提升多少。
-2. ZeRO-2 相比 DDP，显存节省多少，吞吐损失多少。
-3. ZeRO-3 / Offload 是否值得在双卡 `3090` 上承担额外复杂度。
+2. 原生 `Trainer` 在双卡 `3090` 上的稳定可运行基线是什么。
 
 交付物：
 
-- `reports/cpt_benchmark.md`
+- `reports/cpt_benchmark.md` 的 `Native Family` 章节
 
 验收标准：
 
-- 形成第一版正式 benchmark 结论
-- 给出“正式长训后端推荐”
+- `single` 与 `ddp` 在同一 family 内形成第一版正式 benchmark 结论
+
+当前进展（2026-04-24）：
+
+- 已新增 `configs/train/bench/native/` 与 `scripts/train/bench/native/`
+- native family 已固定为 `benchmark_group=cpt_bench_native_batch8_tf32`
+- `single` 与 `ddp` 只在 native family 内部比较，不再强行和 ZeRO 共享同一精度族
+
+## Phase 3B
+
+阶段名称：DeepSpeed Benchmark Track
+
+目标：
+
+- 在 DeepSpeed 路径下比较 `zero2 / zero3_offload`
+
+DeepSpeed Family：
+
+- `deepspeed/cpt_bench_zero2.yaml`
+- `deepspeed/cpt_bench_zero3_offload.yaml`
+
+任务：
+
+- 固定有效全局 batch 为 `16`
+- 固定 `max_steps`
+- 固定精度族为 `fp16=true, tf32=false`
+- 固定 benchmark 数据切片
+- 固定日志与保存频率
+- 输出 DeepSpeed family 对比表
+- 复用 native family 的 `ddp` 结果作为 `DDP bridge`
+
+必须回答的问题：
+
+1. ZeRO-2 相比 ZeRO-3 / Offload，显存节省多少，吞吐损失多少。
+2. `ZeRO-3 / Offload` 是否值得在双卡 `3090` 上承担额外复杂度。
+
+Bridge 说明：
+
+- `native_ddp_bridge_ref` 仅作跨 family 参考
+- bridge 行不参与严格同协议 benchmark 结论
+
+交付物：
+
+- `reports/cpt_benchmark.md` 的 `DeepSpeed Family` 章节
+
+验收标准：
+
+- `zero2` 与 `zero3_offload` 在同一 family 内形成第一版正式 benchmark 结论
+- 报告中包含 bridge 行，但不会把它当作 ZeRO family 的严格可比样本
+
+当前进展（2026-04-24）：
+
+- 已新增 `configs/train/bench/deepspeed/` 与 `scripts/train/bench/deepspeed/`
+- DeepSpeed family 已固定为 `benchmark_group=cpt_bench_deepspeed_batch16_fp16`
+- 由于单卡原生 `Trainer fp16` 在 `24 GB` `3090` 上无法作为全参 baseline 与 ZeRO 共用同一协议，因此 benchmark 已正式拆为 native family 与 DeepSpeed family 两组
+- 已新增 `scripts/12_report_cpt_benchmark.py` 与 `reports/cpt_benchmark.md` 的双章节输出结构，待实际运行 benchmark 后填充正式结果
 
 ## Phase 4
 
@@ -388,7 +475,7 @@ Benchmark Family B：ZeRO Family
 
 ### 4.1 Flops Profiler
 
-- 在 benchmark family 中挑 1 到 2 个后端接入 `Flops Profiler`
+- 在 native family 与 DeepSpeed family 中各挑 1 到 2 个后端接入 `Flops Profiler`
 - 记录 FLOPs、MACs、参数量和 hotspot layer
 
 ### 4.2 PyTorch Profiler
@@ -415,6 +502,15 @@ Benchmark Family B：ZeRO Family
 
 - 至少能解释 benchmark 中最主要的 2 个瓶颈
 
+当前进展（2026-04-24）：
+
+- 已新增 `configs/train/profile/native/` 与 `configs/train/profile/deepspeed/`，用于复用当前 `train_cpt.py` 路径做短程 profile run
+- 已在 `src/train/callbacks.py` 中新增 `TorchProfilerCallback`，并在 `src/train/train_cpt.py` 中接入可选 `torch_profiler` 配置
+- 已在 `src/train/train_cpt.py` 中新增 DeepSpeed comms summary 导出逻辑，profile run 可将 `deepspeed.comm.log_summary()` 落盘为 JSON
+- 已新增 `configs/train/ds/ds_zero2_profile.json`，启用 `flops_profiler`、`comms_logger`、`tensorboard` 和 `csv_monitor`
+- 已新增 `scripts/train/profile/native/cpt_single.sh`、`scripts/train/profile/native/cpt_ddp.sh`、`scripts/train/profile/deepspeed/cpt_zero2.sh`、`scripts/train/profile/deepspeed/cpt_zero3_offload.sh`
+- 已新增 `scripts/13_report_cpt_profile.py` 与 `scripts/14_report_cpt_comms.py`，用于从 profile 产物生成 `reports/cpt_profile.md` 与 `reports/cpt_comms.md`
+
 ## Phase 5
 
 阶段名称：Optimization Track
@@ -440,9 +536,9 @@ Benchmark Family B：ZeRO Family
 任务：
 
 - 设计 `opt` 配置族
-- 做一次正式长训
-- 做一次中断恢复
 - 输出推荐参数
+- 做短程 resume 验证
+- 为后续 `SFT / eval / serving` 提供稳定的推荐配置
 
 交付物：
 
@@ -451,7 +547,22 @@ Benchmark Family B：ZeRO Family
 
 验收标准：
 
-- 有一套可解释的正式 CPT 长训参数
+- 有一套可解释的推荐参数，能够支撑后续链路闭环
+
+当前进展（2026-04-25）：
+
+- 已新增 `configs/train/optimize/native/` 与 `configs/train/optimize/deepspeed/`
+- 已新增 `scripts/train/optimize/native/`、`scripts/train/optimize/deepspeed/` 以及总控脚本 `scripts/train/optimize/run_all.sh`
+- 已新增 `scripts/15_report_cpt_optimization.py` 与 `reports/cpt_optimization.md`
+- 第一版 sweep 当前只覆盖 `train_cpt.py` 已稳定接入且可直接比较的旋钮：
+  - `dataloader_num_workers`
+  - `gradient_checkpointing`
+- `max_seq_length` 和更激进的 batch-density sweep 暂未自动化，因为当前 `bench` tokenized slice 固定为 `2048`，需要新的 tokenized 视图和额外显存验证
+- 基于第一轮 sweep，当前已收敛出两条推荐训练候选：
+  - `native ddp`: `workers=4`, `gradient_checkpointing=true`
+  - `zero2`: `workers=2`, `gradient_checkpointing=true`
+- 已新增 `configs/train/longtrain/native/cpt_longtrain_native_ddp.yaml`、`configs/train/longtrain/deepspeed/cpt_longtrain_zero2.yaml` 以及对应启动脚本，但当前仅保留为后置入口，不作为近期默认执行项
+- 已新增 `configs/train/resume/`、`scripts/train/resume/` 与 `scripts/16_report_cpt_resume_validation.py`，用于在不进入长训的前提下，对 `native ddp` 与 `zero2` 的推荐配置做短程 `checkpoint -> resume -> continue` 验证
 
 ## Phase 6
 
@@ -555,28 +666,43 @@ Benchmark Family B：ZeRO Family
 
 ## Phase 9
 
-阶段名称：SFT、评测与 checkpoint 选择
+阶段名称：Minimal SFT / Eval Closure
 
 目标：
 
-- 用正式 CPT 产物或 base 模型完成 SFT、评测与 checkpoint 选择闭环
+- 在不进入正式长训的前提下，先闭合一条最小可运行、可复现的链路：
+  `CPT 推荐配置 -> short resume validation -> SFT / LoRA -> merge -> minimal eval`
 
 任务：
 
-- 完成 SFT 数据处理
-- 完成 LoRA / merge
-- 对 base、CPT、SFT checkpoint 做统一评测
-- 形成服务前的模型选择结论
+- 完成 SFT cleaned dataset 构建
+- 完成 SFT tokenization，并只训练 assistant 响应
+- 完成 `LoRA + ZeRO-2` 的短程 SFT 训练入口
+- 完成参数化 merge
+- 对 merged checkpoint 执行最小统一评测：`GSM8K + MMLU_mini`
 
 交付物：
 
+- `data/cleaned/sft/*`
+- `data/tokenized/sft/*`
 - `runs/sft/*`
 - `runs/eval/*`
-- `reports/model_selection.md`
+- `runs/eval/summary.json`
 
 验收标准：
 
-- 至少有一个可部署 checkpoint 被选出
+- 至少有一个 merged SFT checkpoint 可被 `from_pretrained` 正常加载
+- `scripts/09_eval_all.sh --model_path ...` 可成功跑通并生成 `runs/eval/summary.json`
+
+当前进展（2026-04-25）：
+
+- 已实现 `scripts/03_build_sft_dataset.py`，固定读取 `ultrachat_200k_mini` 与 `wildchat_mini` 并稳定输出 `data/cleaned/sft/train.jsonl`、`val.jsonl`
+- 已实现 `scripts/05_tokenize_sft.py`，使用 `Qwen` chat template，并默认只训练 assistant 响应
+- 已实现真实的 `src/train/train_sft.py`，CLI 与 `train_cpt.py` 对齐，支持 `LoRA + DeepSpeed ZeRO-2 + resume_from_checkpoint`
+- 已将 `configs/train/sft_lora.yaml` 收敛为短程闭环配置，而非正式长训配置
+- 已将 `scripts/08_merge_lora.py` 改为显式 CLI
+- 已实现 `src/eval/eval_gsm8k.py`、`src/eval/eval_mmlu.py`、`src/eval/aggregate.py` 与参数化 `scripts/09_eval_all.sh`
+- 当前尚缺的是一次真实的 `SFT -> merge -> eval` 端到端实跑验证
 
 ## Phase 10
 
@@ -584,8 +710,8 @@ Benchmark Family B：ZeRO Family
 
 目标：
 
-- 把训练产物接入两个以上推理后端
-- 对比不同推理引擎在双卡 `3090` 上的真实表现
+- 先把 merged SFT checkpoint 接入 `vLLM`，确认最小服务链路可运行
+- 在最小链路闭合后，再补 `HF eager` 与 `DeepSpeed Inference` 基线
 
 Serving Family A：Local Eager Baseline
 
@@ -605,25 +731,35 @@ Serving Family C：vLLM
 
 任务：
 
-- 新增 `src/serve/deepspeed_generate.py`
-- 新增 `scripts/10_serve_deepspeed.sh`
-- 保留 `vLLM` 服务基线
-- 对三类后端做统一压测
+- 优先实现 `vLLM` 服务启动与 OpenAI-compatible 客户端
+- 先完成最小服务压测，只输出：
+  - `TTFT`
+  - `end-to-end latency`
+  - `output tokens`
+  - `decode tokens/s`
+- 在 `vLLM` 路线稳定后，再补 `DeepSpeed Inference` 与 `HF eager`
 
 交付物：
 
 - `src/serve/hf_generate.py`
-- `src/serve/deepspeed_generate.py`
+- `src/serve/openai_client.py`
 - `src/serve/vllm_generate.py`
-- `scripts/10_serve_deepspeed.sh`
 - `scripts/10_serve_vllm.sh`
 - `scripts/11_benchmark_serving.py`
 - `reports/serving_benchmark.md`
 
 验收标准：
 
-- 至少两种推理后端能成功加载训练产物
-- 有正式的服务 benchmark 报告
+- `scripts/10_serve_vllm.sh` 能成功起服务
+- `scripts/11_benchmark_serving.py` 能成功访问服务并生成最小报告
+
+当前进展（2026-04-25）：
+
+- 已实现 `src/serve/hf_generate.py` 本地 eager 生成辅助模块
+- 已实现 `src/serve/openai_client.py` 与 `src/serve/vllm_generate.py`
+- 已将 `scripts/10_serve_vllm.sh` 改为默认读取 `configs/serve/vllm.yaml`，并允许覆盖模型路径
+- 已实现 `scripts/11_benchmark_serving.py`，当前默认只做单后端、低并发的最小服务可用性压测
+- 当前尚缺的是一次真实的 `merged checkpoint -> vLLM serve -> benchmark` 实跑验证
 
 ## Phase 11
 
@@ -674,9 +810,9 @@ Serving Family C：vLLM
 
 ## Immediate Next Actions
 
-1. 把现有 `single_gpu`、`ddp`、`zero2` 配置与脚本重新命名并归类到 `sanity`。
-2. 补齐 `zero2` 与 `zero3_offload` 的 sanity run，并验证 resume。
-3. 新建第一组受控 benchmark：`single_fp16 / ddp_fp16 / zero2_fp16`，固定相同有效全局 batch 与相同步数。
-4. 给 benchmark 主线接入 `Flops Profiler`、`PyTorch Profiler`、`Monitoring` 和 `Communication Logging`。
-5. 在训练主线稳定后，单独开 `AutoTP Training tp2 POC`。
-6. 并行推进 `DeepSpeed Inference tp2` 与 `vLLM tp2` 的 serving baseline。
+1. 实跑 `scripts/train/resume/native/cpt_ddp_validate.sh` 与 `scripts/train/resume/deepspeed/cpt_zero2_validate.sh`，确保 `reports/cpt_resume_validation.md` 变成真实验收门槛。
+2. 用现有 `data/raw/sft/*` 执行 `scripts/03_build_sft_dataset.py` 与 `scripts/05_tokenize_sft.py`，生成稳定的 SFT cleaned/tokenized 产物。
+3. 跑一次最小 `LoRA + ZeRO-2` SFT 训练并执行 `scripts/08_merge_lora.py`。
+4. 对 merged checkpoint 执行 `scripts/09_eval_all.sh`，先拿到 `GSM8K + MMLU_mini` 的统一结果。
+5. 启动 `scripts/10_serve_vllm.sh` 并执行 `scripts/11_benchmark_serving.py`，完成最小服务闭环。
+6. 只有当 `resume -> SFT -> merge -> eval -> vLLM` 链路闭合后，才回到长训、`TP / PP` 和更完整的 serving families。

@@ -1,0 +1,16 @@
+{
+  "train_micro_batch_size_per_gpu": "auto",
+  "gradient_accumulation_steps": "auto",
+  "steps_per_print": 50,
+  "gradient_clipping": "auto",
+  "zero_optimization": {
+    "stage": 2,
+    "allgather_partitions": true,
+    "allgather_bucket_size": 50000000,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 50000000,
+    "overlap_comm": false,
+    "contiguous_gradients": true
+  },
+  "wall_clock_breakdown": false
+}

@@ -1,13 +1,21 @@
+experiment_tier: sft
+experiment_name: qwen3_1_7b_miniv2_sft_lora
+training_backend: deepspeed_zero2
 task: sft_lora
+tokenized_dataset_path: data/tokenized/sft/train
+eval_tokenized_dataset_path: data/tokenized/sft/val
+include_num_input_tokens_seen: all
+
 output_dir: runs/sft/qwen3_1_7b_miniv2_sft_lora
 logging_dir: runs/sft/qwen3_1_7b_miniv2_sft_lora/logs
 
 seed: 42
-num_train_epochs: 2
-max_steps: 2000
-save_steps: 250
-eval_steps: 250
+num_train_epochs: 1
+max_steps: 200
+save_steps: 100
+eval_steps: 1000
 logging_steps: 10
+cuda_memory_logging_steps: 10
 
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
@@ -20,11 +28,29 @@ lr_scheduler_type: cosine
 
 max_seq_length: 2048
 fp16: true
-tf32: true
+tf32: false
 
 packing: true
 train_on_prompt: false
 gradient_checkpointing: true
+dataloader_num_workers: 2
 remove_unused_columns: false
+overwrite_output_dir: false
+save_total_limit: 2
+save_model_artifacts: true
+ddp_find_unused_parameters: false
 report_to:
   - tensorboard
+
+lora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj

@@ -1,0 +1,41 @@
+experiment_tier: benchmark
+experiment_name: cpt_bench_zero2
+training_backend: deepspeed_zero2
+benchmark_group: cpt_bench_deepspeed_batch16_fp16
+tokenized_dataset_path: data/tokenized/cpt/bench
+include_num_input_tokens_seen: all
+
+task: continued_pretraining
+output_dir: runs/cpt/bench/deepspeed/qwen3_1_7b/zero2
+logging_dir: runs/cpt/bench/deepspeed/qwen3_1_7b/zero2/logs
+
+seed: 42
+num_train_epochs: 1
+max_steps: 100
+save_steps: 50
+eval_steps: 50
+logging_steps: 10
+cuda_memory_logging_steps: 10
+
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+
+learning_rate: 2.0e-5
+weight_decay: 0.1
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+max_seq_length: 2048
+bf16: false
+fp16: true
+tf32: false
+
+gradient_checkpointing: true
+dataloader_num_workers: 2
+remove_unused_columns: false
+overwrite_output_dir: false
+save_total_limit: 2
+ddp_find_unused_parameters: false
+report_to:
+  - tensorboard
