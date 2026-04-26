@@ -1,35 +1,41 @@
-<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TwinForge logo">
-  <defs>
-    <linearGradient id="forge" x1="20" y1="78" x2="78" y2="20" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#F59E0B"/>
-      <stop offset="1" stop-color="#F97316"/>
-    </linearGradient>
-    <linearGradient id="steel" x1="26" y1="24" x2="72" y2="72" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#38BDF8"/>
-      <stop offset="1" stop-color="#0369A1"/>
-    </linearGradient>
-    <filter id="shadow" x="8" y="8" width="80" height="80" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.16"/>
-    </filter>
-  </defs>
+<svg width="820" height="180" viewBox="0 0 820 180" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">TwinForge</title>
+  <desc id="desc">TwinForge logo and wordmark</desc>
+  <rect width="820" height="180" fill="white"/>
 
-  <!-- Forge flame / anvil base -->
-  <path d="M18 70c10 7 26 8 39 1 8-4 14-11 21-20-1 17-11 31-26 36-14 5-29 2-34-5-3-4-3-8 0-12Z" fill="url(#forge)" opacity="0.95"/>
-  <path d="M31 68c5-9 7-18 4-28 9 7 15 16 14 28-6 3-12 3-18 0Z" fill="#FDBA74" opacity="0.9"/>
+  <g transform="translate(164 42) scale(1)">
+    <defs>
+      <linearGradient id="forge" x1="20" y1="78" x2="78" y2="20" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#F59E0B"/>
+        <stop offset="1" stop-color="#F97316"/>
+      </linearGradient>
+      <linearGradient id="steel" x1="26" y1="24" x2="72" y2="72" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#38BDF8"/>
+        <stop offset="1" stop-color="#0369A1"/>
+      </linearGradient>
+      <filter id="shadow" x="8" y="8" width="80" height="80" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+        <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.16"/>
+      </filter>
+    </defs>
 
-  <!-- Twin connected compute/forge frame -->
-  <g filter="url(#shadow)">
-    <path d="M28 22h40l14 26-14 26H28L14 48 28 22Z" fill="#FFF7ED" stroke="#FB923C" stroke-width="5" stroke-linejoin="round"/>
-    <path d="M28 22 68 74M68 22 28 74M14 48h68" stroke="url(#steel)" stroke-width="5" stroke-linecap="round"/>
-    <path d="M28 22h40l14 26-14 26H28L14 48 28 22Z" stroke="#0284C7" stroke-width="3" stroke-linejoin="round" stroke-dasharray="18 8"/>
+    <path d="M18 70c10 7 26 8 39 1 8-4 14-11 21-20-1 17-11 31-26 36-14 5-29 2-34-5-3-4-3-8 0-12Z" fill="url(#forge)" opacity="0.95"/>
+    <path d="M31 68c5-9 7-18 4-28 9 7 15 16 14 28-6 3-12 3-18 0Z" fill="#FDBA74" opacity="0.9"/>
+
+    <g filter="url(#shadow)">
+      <path d="M28 22h40l14 26-14 26H28L14 48 28 22Z" fill="#FFF7ED" stroke="#FB923C" stroke-width="5" stroke-linejoin="round"/>
+      <path d="M28 22 68 74M68 22 28 74M14 48h68" stroke="url(#steel)" stroke-width="5" stroke-linecap="round"/>
+      <path d="M28 22h40l14 26-14 26H28L14 48 28 22Z" stroke="#0284C7" stroke-width="3" stroke-linejoin="round" stroke-dasharray="18 8"/>
+    </g>
+
+    <circle cx="28" cy="22" r="7" fill="#F97316"/>
+    <circle cx="68" cy="22" r="7" fill="#F97316"/>
+    <circle cx="82" cy="48" r="7" fill="#F97316"/>
+    <circle cx="68" cy="74" r="7" fill="#F97316"/>
+    <circle cx="28" cy="74" r="7" fill="#F97316"/>
+    <circle cx="14" cy="48" r="7" fill="#F97316"/>
+    <circle cx="48" cy="48" r="8" fill="#F59E0B" stroke="#FFF7ED" stroke-width="3"/>
   </g>
 
-  <!-- Nodes / sparks -->
-  <circle cx="28" cy="22" r="7" fill="#F97316"/>
-  <circle cx="68" cy="22" r="7" fill="#F97316"/>
-  <circle cx="82" cy="48" r="7" fill="#F97316"/>
-  <circle cx="68" cy="74" r="7" fill="#F97316"/>
-  <circle cx="28" cy="74" r="7" fill="#F97316"/>
-  <circle cx="14" cy="48" r="7" fill="#F97316"/>
-  <circle cx="48" cy="48" r="8" fill="#F59E0B" stroke="#FFF7ED" stroke-width="3"/>
+  <text x="296" y="84" fill="#111827" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="46" font-weight="750">TwinForge</text>
+  <text x="299" y="119" fill="#4B5563" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18">LLM training and serving performance lab</text>
 </svg>
