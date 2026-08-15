@@ -1,6 +1,6 @@
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
-requests>=2.31,<3
+requests>=2.34.2,<3
 pydantic>=2.6,<3
 # D1：OpenTelemetry（env-gated；未设 OTEL_EXPORTER_OTLP_ENDPOINT 时不导出）。
 opentelemetry-sdk==1.27.0
