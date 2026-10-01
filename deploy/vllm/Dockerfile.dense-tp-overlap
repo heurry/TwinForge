@@ -1,0 +1,7 @@
+FROM vllm/vllm-openai:v0.26.0
+
+COPY patches/vllm-v0.26.0/dense-tp-overlap.patch /tmp/dense-tp-overlap.patch
+RUN patch --batch --forward -p1 \
+    -d /usr/local/lib/python3.12/dist-packages \
+    < /tmp/dense-tp-overlap.patch \
+    && rm /tmp/dense-tp-overlap.patch

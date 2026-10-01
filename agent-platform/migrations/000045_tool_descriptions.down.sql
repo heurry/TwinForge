@@ -1,0 +1,2 @@
+-- Tool and Agent versions are append-only. Historical versions remain
+-- available for Run replay; rollback is intentionally a no-op.

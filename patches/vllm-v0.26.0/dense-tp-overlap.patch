@@ -1,0 +1,100 @@
+--- a/vllm/model_executor/layers/linear.py
++++ b/vllm/model_executor/layers/linear.py
+@@ -2,6 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+ import itertools
++import os
+ from abc import abstractmethod
+ from collections.abc import Iterable
+ from typing import Any
+@@ -45,6 +46,28 @@
+
+ logger = init_logger(__name__)
+
++_DENSE_TP_OVERLAP_STATES: dict[
++    int, tuple[torch.cuda.Stream, torch.cuda.Event, torch.cuda.Event, torch.cuda.Event]
++] = {}
++
++
++def _get_dense_tp_overlap_state(
++    device: torch.device,
++) -> tuple[torch.cuda.Stream, torch.cuda.Event, torch.cuda.Event, torch.cuda.Event]:
++    device_index = device.index
++    assert device_index is not None
++    state = _DENSE_TP_OVERLAP_STATES.get(device_index)
++    if state is None:
++        with torch.cuda.device(device_index):
++            state = (
++                torch.cuda.Stream(device=device),
++                torch.cuda.Event(),
++                torch.cuda.Event(),
++                torch.cuda.Event(),
++            )
++        _DENSE_TP_OVERLAP_STATES[device_index] = state
++    return state
++
+ WEIGHT_LOADER_V2_SUPPORTED = [
+     "UnquantizedLinearMethod",
+     "CompressedTensorsLinearMethod",
+@@ -1689,12 +1712,56 @@
+         # Only fuse bias add into GEMM for rank 0 (this ensures that
+         # bias will not get added more than once in TP>1 case)
+         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
+-        output_parallel = self.quant_method.apply(self, input_parallel, bias_)
++        min_overlap_tokens = int(
++            os.getenv("VLLM_DENSE_TP_OVERLAP_MIN_TOKENS", "1024")
++        )
++        use_dense_tp_overlap = (
++            os.getenv("VLLM_DENSE_TP_OVERLAP", "0") == "1"
++            and self.reduce_results
++            and self.tp_size > 1
++            and input_parallel.ndim == 2
++            and input_parallel.shape[0] >= min_overlap_tokens
++        )
++
++        if use_dense_tp_overlap:
++            num_tokens = input_parallel.shape[0]
++            split_point = (num_tokens // 2 // 128) * 128
++            if split_point == 0 or split_point == num_tokens:
++                output_parallel = self.quant_method.apply(
++                    self, input_parallel, bias_
++                )
++                output = tensor_model_parallel_all_reduce(output_parallel)
++            else:
++                comm_stream, ready_a, ready_b, comm_done = (
++                    _get_dense_tp_overlap_state(input_parallel.device)
++                )
++                compute_stream = torch.cuda.current_stream(input_parallel.device)
++
++                output_a = self.quant_method.apply(
++                    self, input_parallel[:split_point], bias_
++                )
++                ready_a.record(compute_stream)
++                with torch.cuda.stream(comm_stream):
++                    comm_stream.wait_event(ready_a)
++                    reduced_a = tensor_model_parallel_all_reduce(output_a)
+
+-        if self.reduce_results and self.tp_size > 1:
+-            output = tensor_model_parallel_all_reduce(output_parallel)
++                output_b = self.quant_method.apply(
++                    self, input_parallel[split_point:], bias_
++                )
++                ready_b.record(compute_stream)
++                with torch.cuda.stream(comm_stream):
++                    comm_stream.wait_event(ready_b)
++                    reduced_b = tensor_model_parallel_all_reduce(output_b)
++                    comm_done.record(comm_stream)
++
++                compute_stream.wait_event(comm_done)
++                output = torch.cat((reduced_a, reduced_b), dim=0)
+         else:
+-            output = output_parallel
++            output_parallel = self.quant_method.apply(self, input_parallel, bias_)
++            if self.reduce_results and self.tp_size > 1:
++                output = tensor_model_parallel_all_reduce(output_parallel)
++            else:
++                output = output_parallel
+
+         if not self.return_bias:
+             return output

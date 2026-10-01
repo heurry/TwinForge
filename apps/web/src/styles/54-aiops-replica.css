@@ -41,6 +41,42 @@
   font-weight: 700;
 }
 
+.aiops-scope-switch {
+  align-items: center;
+  background: #eef2f7;
+  border: 1px solid #dfe6f1;
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 3px;
+  justify-self: start;
+  padding: 3px;
+}
+
+.aiops-scope-switch button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #64748b;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 7px;
+  height: 32px;
+  padding: 0 13px;
+}
+
+.aiops-scope-switch button.active {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+  color: #0f172a;
+}
+.aiops-llm-status { align-items: center; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; display: flex; font-size: 12px; gap: 8px; margin-bottom: 12px; padding: 9px 12px; }
+.aiops-llm-status.live { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+.aiops-llm-status span { margin-left: auto; }
+.aiops-llm-status small { color: inherit; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .aiops-process-ribbon {
   display: grid;
   gap: 10px;
@@ -238,12 +274,45 @@
   grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr);
 }
 
+.aiops-diagnosis-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+}
+
 .aiops-root-cause {
   background: #fef2f2;
   border: 1px solid #fecaca;
   border-radius: 8px;
   color: #b91c1c;
   padding: 10px 12px;
+}
+
+.aiops-root-cause.healthy {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+
+.aiops-diagnosis-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.aiops-diagnosis-meta > span:not(.status-badge) {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.aiops-root-cause small {
+  display: block;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 7px;
 }
 
 .aiops-root-cause strong {
@@ -272,6 +341,21 @@
   color: #334155;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.aiops-evidence-list span b {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.aiops-evidence-list span em {
+  background: #f1f5f9;
+  border-radius: 4px;
+  color: #64748b;
+  font-size: 10px;
+  font-style: normal;
+  margin-left: 5px;
+  padding: 2px 4px;
 }
 
 .aiops-evidence-list span::before {
@@ -653,6 +737,99 @@
 
   .aiops-bottom-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aiops-diagnosis-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.aiops-replica .aiops-incident-row {
+  grid-template-columns: 72px 72px minmax(190px, 0.8fr) minmax(260px, 1.5fr) 86px 72px;
+}
+
+@media (max-width: 900px) {
+  .infra-kpi-grid.aiops-kpi-strip,
+  .aiops-context-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aiops-scope-switch {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-self: stretch;
+  }
+
+  .aiops-scope-switch button {
+    justify-content: center;
+    min-width: 0;
+  }
+
+  .aiops-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .aiops-toolbar .aiops-search {
+    min-width: 0;
+    width: auto;
+  }
+}
+
+@media (max-width: 820px) {
+  .infra-platform-shell:has(.aiops-page) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 56px 46px minmax(0, 1fr);
+  }
+
+  .infra-platform-shell:has(.aiops-page) .infra-topbar {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1;
+    padding: 0 12px;
+  }
+
+  .infra-platform-shell:has(.aiops-page) .infra-global-search,
+  .infra-platform-shell:has(.aiops-page) .infra-topbar-actions,
+  .infra-platform-shell:has(.aiops-page) .infra-copilot {
+    display: none;
+  }
+
+  .infra-platform-shell:has(.aiops-page) .infra-sidebar {
+    grid-column: 1;
+    grid-row: 2;
+    overflow-x: auto;
+    padding: 6px 8px;
+  }
+
+  .infra-platform-shell:has(.aiops-page) .infra-nav {
+    display: flex;
+    gap: 4px;
+    min-width: max-content;
+  }
+
+  .infra-platform-shell:has(.aiops-page) .infra-nav-button {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .infra-platform-shell:has(.aiops-page) main.infra-main {
+    grid-column: 1;
+    grid-row: 3;
+    padding: 12px;
+  }
+
+  .aiops-replica .console-page-header {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .aiops-replica .console-page-actions {
+    flex: 0 0 auto;
+  }
+
+  .aiops-replica .console-page-actions .console-refresh {
+    min-width: 36px;
   }
 }
 

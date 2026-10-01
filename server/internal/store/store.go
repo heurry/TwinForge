@@ -6,9 +6,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/heurry/cloudnative-infra-platform/server/internal/db/sqlcgen"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
@@ -20,13 +21,14 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, q: sqlcgen.New(pool)}
 }
 
-// Audit best-effort 写审计；失败不返回错误（对齐 Java AuditService.record）。
-func (s *Store) Audit(ctx context.Context, actorID, actorRole, action, resourceType, resourceID string, metadata map[string]any) {
+// Audit writes an audit event and surfaces persistence failures. Critical
+// multi-statement mutations additionally write their audit row in-transaction.
+func (s *Store) Audit(ctx context.Context, actorID, actorRole, action, resourceType, resourceID string, metadata map[string]any) error {
 	meta, err := json.Marshal(metadata)
 	if err != nil {
 		meta = []byte("{}")
 	}
-	_ = s.q.InsertAuditEvent(ctx, sqlcgen.InsertAuditEventParams{
+	err = s.q.InsertAuditEvent(ctx, sqlcgen.InsertAuditEventParams{
 		ActorID:      ptr(actorID),
 		ActorRole:    ptr(actorRole),
 		Action:       action,
@@ -34,6 +36,10 @@ func (s *Store) Audit(ctx context.Context, actorID, actorRole, action, resourceT
 		ResourceID:   ptr(resourceID),
 		Metadata:     meta,
 	})
+	if err != nil {
+		slog.Error("audit persistence failed", "action", action, "resource_type", resourceType, "resource_id", resourceID, "err", err)
+	}
+	return err
 }
 
 func ptr(s string) *string {

@@ -1,0 +1,172 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+stages:
+  - validate
+  - test
+  - integration
+  - package
+
+default:
+  interruptible: true
+
+variables:
+  GOWORK: "off"
+
+go-server:
+  stage: test
+  image: golang:1.22
+  cache:
+    key: go-server-$CI_COMMIT_REF_SLUG
+    paths:
+      - .cache/go-server-mod/
+      - .cache/go-server-build/
+  variables:
+    GOMODCACHE: $CI_PROJECT_DIR/.cache/go-server-mod
+    GOCACHE: $CI_PROJECT_DIR/.cache/go-server-build
+  script:
+    - cd server
+    - go build ./...
+    - go vet ./...
+    - go test ./...
+
+go-agent:
+  stage: test
+  image: golang:1.22
+  cache:
+    key: go-agent-$CI_COMMIT_REF_SLUG
+    paths:
+      - .cache/go-agent-mod/
+      - .cache/go-agent-build/
+  variables:
+    GOMODCACHE: $CI_PROJECT_DIR/.cache/go-agent-mod
+    GOCACHE: $CI_PROJECT_DIR/.cache/go-agent-build
+  script:
+    - cd agent
+    - go build ./...
+    - go vet ./...
+    - go test ./...
+
+web:
+  stage: test
+  image: node:20
+  cache:
+    key:
+      files:
+        - apps/web/package-lock.json
+    paths:
+      - .npm/
+  script:
+    - cd apps/web
+    - npm ci --cache "$CI_PROJECT_DIR/.npm" --prefer-offline
+    - npm run build
+
+ai-service:
+  stage: test
+  image: python:3.11-slim
+  cache:
+    key:
+      files:
+        - apps/ai-service/requirements.txt
+    paths:
+      - .cache/pip/
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  script:
+    - cd apps/ai-service
+    - pip install -r requirements.txt pytest
+    - pytest -q
+
+sqlc-verify:
+  stage: validate
+  image: golang:1.22
+  cache:
+    key: sqlc-1.27.0
+    paths:
+      - .cache/sqlc-go/
+  variables:
+    GOMODCACHE: $CI_PROJECT_DIR/.cache/sqlc-go
+  script:
+    - go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+    - cd server
+    - sqlc generate
+    - git diff --exit-code -- internal/db/sqlcgen
+
+helm-lint:
+  stage: validate
+  image:
+    name: alpine/helm:3.16.4
+    entrypoint: [""]
+  script:
+    - helm lint deploy/helm/cloudnative-infra-platform
+    - helm template cip deploy/helm/cloudnative-infra-platform > /dev/null
+
+integration:
+  stage: integration
+  image: golang:1.22
+  services:
+    - name: pgvector/pgvector:pg16
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+    - name: minio/minio
+      alias: minio
+      command: ["server", "/data"]
+  variables:
+    POSTGRES_DB: infra_platform
+    POSTGRES_USER: infra
+    POSTGRES_PASSWORD: infra
+    MINIO_ROOT_USER: minioadmin
+    MINIO_ROOT_PASSWORD: minioadmin
+    TEST_DATABASE_URL: postgres://infra:infra@postgres:5432/infra_platform?sslmode=disable
+    TEST_REDIS_URL: redis://redis:6379
+    TEST_S3_ENDPOINT: minio:9000
+    GOMODCACHE: $CI_PROJECT_DIR/.cache/integration-mod
+    GOCACHE: $CI_PROJECT_DIR/.cache/integration-build
+  cache:
+    key: integration-$CI_COMMIT_REF_SLUG
+    paths:
+      - .cache/integration-mod/
+      - .cache/integration-build/
+  script:
+    - cd server
+    - go test ./... -p 1
+
+container-images:
+  stage: package
+  image: docker:27.4.1-cli
+  services:
+    - name: docker:27.4.1-dind
+      alias: docker
+  parallel:
+    matrix:
+      - COMPONENT: go-server
+        CONTEXT: server
+        DOCKERFILE: server/Dockerfile
+      - COMPONENT: python-ai-service
+        CONTEXT: apps/ai-service
+        DOCKERFILE: apps/ai-service/Dockerfile
+      - COMPONENT: go-agent
+        CONTEXT: agent
+        DOCKERFILE: agent/Dockerfile
+      - COMPONENT: web
+        CONTEXT: apps/web
+        DOCKERFILE: apps/web/Dockerfile
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: /certs
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+  script:
+    - export SHA_IMAGE="$CI_REGISTRY_IMAGE/$COMPONENT:$CI_COMMIT_SHORT_SHA"
+    - export REF_IMAGE="$CI_REGISTRY_IMAGE/$COMPONENT:$CI_COMMIT_REF_SLUG"
+    - docker build --pull -f "$DOCKERFILE" -t "$SHA_IMAGE" -t "$REF_IMAGE" "$CONTEXT"
+    - docker push "$SHA_IMAGE"
+    - docker push "$REF_IMAGE"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

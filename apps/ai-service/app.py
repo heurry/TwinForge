@@ -19,7 +19,7 @@ from aiservice.agent import run_agent_step
 from aiservice.config import load_config
 from aiservice.diagnose import run_diagnose
 from aiservice.embed import embed_texts
-from aiservice.llm import sse_event, stream_chat_completion
+from aiservice.llm import resolve_upstream, sse_event, stream_chat_completion
 from aiservice.schemas import (
     AgentStepRequest,
     AgentStepResponse,
@@ -39,13 +39,30 @@ setup_telemetry(app)
 
 @app.get("/internal/health")
 def health() -> Dict[str, object]:
+    upstream_ok = False
+    upstream_error = ""
+    resolved_base = ""
+    resolved_model = cfg.llm_model
+    available_models = []
+    if cfg.llm_base_url and cfg.stub_mode != "on":
+        try:
+            resolved_base, resolved_model, available_models = resolve_upstream(cfg)
+            upstream_ok = True
+        except Exception as exc:  # noqa: BLE001 - health 必须返回可解释的降级状态
+            upstream_error = f"{type(exc).__name__}: {exc}"
     return {
         "service": "cloudnative-ai-service",
         "status": "ok",
         "version": __version__,
         "stub_mode": cfg.stub_mode,
-        "llm_base_url": cfg.llm_base_url,
-        "model": cfg.llm_model,
+        "llm_base_url": resolved_base or cfg.llm_base_url,
+        "configured_model": cfg.llm_model,
+        "model": resolved_model,
+        "model_selection": "explicit" if cfg.llm_model.lower() != "auto" else "auto_probe",
+        "available_models": available_models,
+        "llm_connected": upstream_ok,
+        "effective_mode": "live" if upstream_ok else "stub" if cfg.stub_mode != "off" else "unavailable",
+        "llm_error": upstream_error,
     }
 
 
@@ -88,8 +105,9 @@ def _chat_events(req: ChatRequest) -> Iterator[str]:
     if not _force_stub():
         yield sse_event("start", {"mode": "live"})
         try:
+            base_url, model, _ = resolve_upstream(cfg)
             for text in stream_chat_completion(
-                cfg.llm_base_url, cfg.llm_model, cfg.llm_api_key, messages,
+                base_url, model, cfg.llm_api_key, messages,
                 max_tokens=req.max_tokens, temperature=req.temperature,
                 timeout=cfg.request_timeout,
             ):

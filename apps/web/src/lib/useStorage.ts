@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { describeError } from "../components/common/FeedbackStates";
-import { listArchives, runArchive, storageTiers } from "./api";
+import { getAgentStorageSummary, listArchives, runArchive, storageTiers } from "./api";
 
 export type Storage = ReturnType<typeof useStorage>;
 
@@ -12,18 +12,26 @@ export function useStorage() {
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["storage", "tiers"] });
     void qc.invalidateQueries({ queryKey: ["storage", "archives"] });
+    void qc.invalidateQueries({ queryKey: ["storage", "agent"] });
   };
 
   const tiers = useQuery({
     queryKey: ["storage", "tiers"],
     queryFn: storageTiers,
-    refetchInterval: 15000
+    refetchInterval: 5000
+  });
+
+  const agent = useQuery({
+    queryKey: ["storage", "agent"],
+    queryFn: getAgentStorageSummary,
+    refetchInterval: 5000,
+    retry: false
   });
 
   const archives = useQuery({
     queryKey: ["storage", "archives"],
     queryFn: () => listArchives(50),
-    refetchInterval: 15000
+    refetchInterval: 30000
   });
 
   const run = useMutation({
@@ -42,5 +50,5 @@ export function useStorage() {
     onError: (e) => toast.error(`归档失败：${describeError(e)}`)
   });
 
-  return { tiers, archives, run };
+  return { tiers, agent, archives, run };
 }

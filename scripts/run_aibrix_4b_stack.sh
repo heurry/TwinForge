@@ -26,6 +26,7 @@ MINIKUBE_MODEL_PATH="${MINIKUBE_MODEL_PATH:-${ROOT_DIR}/model/Qwen3.5-4B}"
 AIBRIX_VERSION="${AIBRIX_VERSION:-v0.6.0}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3-4b-customer}"
 AIBRIX_PORT="${AIBRIX_PORT:-8010}"
+AIBRIX_NODE_PORT="${AIBRIX_NODE_PORT:-30080}"
 # port-forward 监听地址（逗号分隔列表）：默认同时绑回环 + docker 网桥网关，不暴露到局域网。
 # - 127.0.0.1：脚本自身的健康探针（wait_http / curl）与宿主访问走回环，必须保留；
 # - 172.17.0.1：compose 容器经 host.docker.internal（= 网桥网关）访问网关 / cAdvisor / vLLM。
@@ -33,7 +34,7 @@ AIBRIX_PORT="${AIBRIX_PORT:-8010}"
 # 网桥网关非 172.17.0.1 时按 `docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'`
 # 调整；想暴露所有网卡可设 PF_BIND_ADDRESS=0.0.0.0。
 PF_BIND_ADDRESS="${PF_BIND_ADDRESS:-127.0.0.1,172.17.0.1}"
-CADVISOR_PORT="${CADVISOR_PORT:-18080}"
+CADVISOR_PORT="${CADVISOR_PORT:-18081}"
 CADVISOR_TIMEOUT="${CADVISOR_TIMEOUT:-120s}"
 START_MINIKUBE_IF_STOPPED="${START_MINIKUBE_IF_STOPPED:-1}"
 MINIKUBE_STATUS_TIMEOUT="${MINIKUBE_STATUS_TIMEOUT:-30s}"
@@ -434,8 +435,14 @@ start_direct_round_robin_port_forwards() {
       | awk '$2 == "True" {print $1}' \
       | sort
   )
-  if [[ "${#pods[@]}" -lt 2 ]]; then
-    log "expected 2 ready backend pods for ${SERVED_MODEL_NAME}, found ${#pods[@]}"
+  local desired_replicas
+  desired_replicas="$(kubectl get deployment "${SERVED_MODEL_NAME}" -n default -o jsonpath='{.spec.replicas}')"
+  if [[ -z "${desired_replicas}" || "${desired_replicas}" -lt 1 ]]; then
+    log "deployment ${SERVED_MODEL_NAME} has no desired replicas"
+    return 1
+  fi
+  if [[ "${#pods[@]}" -lt "${desired_replicas}" ]]; then
+    log "expected ${desired_replicas} ready backend pod(s) for ${SERVED_MODEL_NAME}, found ${#pods[@]}"
     kubectl get pods -n default -l "app=${SERVED_MODEL_NAME}" -o wide || true
     return 1
   fi
@@ -443,11 +450,10 @@ start_direct_round_robin_port_forwards() {
   kill_port 8000
   kill_port 8001
 
-  local ports=(8000 8001)
   local idx
-  for idx in 0 1; do
+  for ((idx = 0; idx < desired_replicas; idx++)); do
     local pod="${pods[$idx]}"
-    local port="${ports[$idx]}"
+    local port="$((8000 + idx))"
     log "starting round-robin port-forward pod/${pod} ${port}:8000 (--address ${PF_BIND_ADDRESS})"
     nohup kubectl port-forward --address "${PF_BIND_ADDRESS}" -n default "pod/${pod}" "${port}:8000" \
       > "${LOG_DIR}/vllm_replica_${idx}.log" 2>&1 &
@@ -455,9 +461,10 @@ start_direct_round_robin_port_forwards() {
   done
 
   sleep 3
-  wait_http "http://127.0.0.1:8000/health" 120
-  wait_http "http://127.0.0.1:8001/health" 120
-  ss -ltnp | rg ':8000 |:8001 '
+  for ((idx = 0; idx < desired_replicas; idx++)); do
+    wait_http "http://127.0.0.1:$((8000 + idx))/health" 120
+  done
+  ss -ltnp | rg ':800[0-9] '
 }
 
 main() {
@@ -485,6 +492,9 @@ main() {
   fi
 
   install_aibrix_if_needed
+  # 正式应用链路通过固定 NodePort 访问，不依赖易失的 kubectl
+  # port-forward。8010 仅保留给宿主机人工调试。
+  run kubectl apply -f deploy/aibrix/twinforge-aibrix-gateway-service.yaml
   sync_model_into_minikube
   deploy_4b_backend
   start_direct_round_robin_port_forwards
@@ -493,8 +503,9 @@ main() {
   capture_diagnostics "success"
 
   log "AIBrix 4B serving layer is ready"
+  log "AIBrix stable application endpoint: http://minikube:${AIBRIX_NODE_PORT}/v1"
   log "AIBrix Gateway: http://127.0.0.1:${AIBRIX_PORT}/v1"
-  log "vLLM replicas:  http://127.0.0.1:8000  http://127.0.0.1:8001"
+  log "vLLM direct endpoint(s): http://127.0.0.1:8000 ... (one port per desired replica)"
   log "cAdvisor:       ${CADVISOR_URL}"
   log "Logs:           ${LOG_DIR}"
   log "Next: bring up the Go control plane + dashboard with scripts/run_full_stack.sh"

@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Activity, BarChart3, Box, Eye, MoreVertical, Plus, RefreshCw, Route, Search } from "lucide-react";
+import { Activity, BarChart3, Box, Eye, MoreVertical, Plus, RefreshCw, Rocket, Route, Search } from "lucide-react";
 
 import { useGoToPage } from "../lib/useGoToPage";
+import { useDeliveryContext } from "../lib/useDeliveryContext";
 import { useModelRegistry } from "../lib/useModelRegistry";
 
 import { KpiGrid, PageHeader, PanelHeader, StatusBadge } from "../components/common/PlatformPrimitives";
@@ -11,11 +12,9 @@ import { describeError, EmptyState, ErrorState, Skeleton } from "../components/c
 import { Drawer, DrawerField } from "../components/common/Drawer";
 import { ModelRegistryPanel } from "../components/registry/ModelRegistryPanel";
 import { RegisterVersionDrawer } from "../components/registry/RegisterVersionDrawer";
-import { modelsSnapshot, type ModelRegistryRow } from "../data/platformSnapshots";
 import { normalizeServiceInstance } from "../data/mockPlatformData";
 import { api } from "../lib/api";
-import { cn } from "../lib/utils";
-import type { Metrics, ServiceInstance } from "../types/platform";
+import type { Metrics, ModelRegistryRow, ServiceInstance } from "../types/platform";
 import type { RegisteredModelVersion } from "../types/registry";
 import type { KpiItem } from "../types/ui";
 
@@ -25,6 +24,7 @@ function isRouter(item: ServiceInstance): boolean {
 
 export function ModelsPage() {
   const goTo = useGoToPage();
+  const { context, update } = useDeliveryContext();
   const queryClient = useQueryClient();
   const [checking, setChecking] = useState<string | null>(null);
   const [routeTarget, setRouteTarget] = useState<ServiceInstance | null>(null);
@@ -34,7 +34,7 @@ export function ModelsPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [modelTab, setModelTab] = useState("模型列表");
+  const [modelTab, setModelTab] = useState("模型版本");
   const registry = useModelRegistry();
 
   const instancesQuery = useQuery({
@@ -86,30 +86,21 @@ export function ModelsPage() {
   return (
     <section className="infra-page models-page models-replica">
       <PageHeader
-        title="模型注册"
-        subtitle="统一管理模型、版本、元数据与运行时绑定"
+        title="模型与版本"
+        subtitle="管理原始模型、LoRA 微调产物、版本血缘、产物归档与生产运行时绑定"
         actions={
-          <button className="console-refresh primary" onClick={() => setCreating(true)} type="button">
-            <Plus size={14} /> 注册模型
-          </button>
+          <div className="models-header-actions">
+            <button className="console-refresh" disabled={!context.modelVersionId} title="发布当前推理模型版本" onClick={() => goTo("release", { deliveryKind: "inference" })} type="button"><Rocket size={14} /> 发布当前版本</button>
+            <button className="console-refresh primary" onClick={() => setCreating(true)} type="button"><Plus size={14} /> 注册版本</button>
+          </div>
         }
       />
-
-      <div className="models-process-ribbon">
-        {modelsSnapshot.process.map((step, index) => (
-          <div className={cn("models-process-step", index === 5 && "active", index < 5 && "done")} key={step.title}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <strong>{step.title}</strong>
-            <small>{step.detail}</small>
-          </div>
-        ))}
-      </div>
 
       <KpiGrid className="models-kpi-strip" items={kpis} />
 
       <section className="infra-panel models-main-panel">
         <div className="models-tabs">
-          {["模型列表", "运行时绑定", "元数据管理"].map((t) => (
+          {["模型版本", "运行时绑定"].map((t) => (
             <button className={modelTab === t ? "active" : undefined} key={t} onClick={() => setModelTab(t)} type="button">{t}</button>
           ))}
         </div>
@@ -218,7 +209,13 @@ export function ModelsPage() {
           </table>
         )}
 
-        {modelTab === "元数据管理" && <ModelRegistryPanel registry={registry} />}
+        {modelTab === "模型版本" && <ModelRegistryPanel
+          registry={registry}
+          selectedVersionID={context.modelVersionId}
+          onSelect={(version) => update({ modelId: version.model_id, modelVersionId: version.id })}
+          onBenchmark={(version) => goTo("benchmarks", { deliveryKind: "inference", modelId: version.model_id, modelVersionId: version.id, trainingJobId: null })}
+          onRelease={(version) => goTo("release", { deliveryKind: "inference", modelId: version.model_id, modelVersionId: version.id, trainingJobId: null })}
+        />}
       </section>
 
       <RoutingPolicyDrawer instance={routeTarget} onClose={() => setRouteTarget(null)} />
@@ -249,14 +246,14 @@ function buildModelKpis(instances: ServiceInstance[] | undefined, metrics: Metri
   const versions = registryVersions ?? [];
   // 真实注册中心数据：模型数 = 不同 model_id；活跃版本 = status=active。
   const registeredModels = new Set(versions.map((v) => v.model_id)).size;
-  const activeVersions = versions.filter((v) => v.status === "active").length;
+  const activeVersions = versions.filter((v) => v.status === "active" || v.status === "serving").length;
   const healthy = list.filter((item) => item.status === "healthy").length;
   const totalInstances = metrics?.service_instances?.length ?? list.length;
   const types = new Set(list.map((item) => item.kind)).size;
   const compliance = list.length ? (healthy / list.length) * 100 : null;
   return [
     { id: "total", label: "注册模型", value: String(registeredModels), detail: `${versions.length} 个版本`, trend: [] },
-    { id: "versions", label: "活跃版本", value: String(activeVersions), detail: "status=active", trend: [], tone: activeVersions ? "success" : undefined },
+    { id: "versions", label: "活跃版本", value: String(activeVersions), detail: "active / serving", trend: [], tone: activeVersions ? "success" : undefined },
     { id: "instances", label: "运行实例", value: String(totalInstances), detail: "绑定实例总数", trend: [] },
     { id: "types", label: "模型类型", value: String(types), detail: "Runtime 类型", trend: [] },
     { id: "compliance", label: "合规检查", value: compliance == null ? "—" : `${compliance.toFixed(1)}%`, detail: "健康占比", trend: [], tone: compliance != null && compliance < 90 ? "warning" : "success" },

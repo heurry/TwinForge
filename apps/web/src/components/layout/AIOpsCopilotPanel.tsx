@@ -30,7 +30,7 @@ type DiagnosisDetail = DiagnosisListItem & {
   related_resources?: unknown[];
 };
 
-const DEFAULT_QUESTION = "请基于当前 metrics、Kubernetes、配置变更和部署记录诊断 llm-chat-service 延迟升高的根因，并给出修复建议。";
+const DEFAULT_QUESTION = "请基于当前 metrics、Kubernetes、配置变更和部署记录诊断生产服务异常的根因，并给出修复建议。";
 
 export function AIOpsCopilotPanel({
   hidden = false,
@@ -78,7 +78,7 @@ export function AIOpsCopilotPanel({
   const p95 = metrics?.p95_latency_ms ?? null;
   const ttft = metrics?.p95_ttft_ms ?? null;
   const errorRate = metrics?.error_rate ?? null;
-  const targetPod = firstKey(metrics?.target_pod_counts) ?? "llm-chat-service";
+  const targetPod = firstKey(metrics?.target_pod_counts) ?? "当前生产服务";
 
   const createIncidentMutation = useMutation({
     mutationFn: () => api<{ id: string; status: string }>("/api/incidents", {
@@ -98,7 +98,7 @@ export function AIOpsCopilotPanel({
   });
 
   const diagnoseMutation = useMutation({
-    mutationFn: (nextQuestion: string) => api<{ diagnosis?: DiagnosisDetail; mode?: string }>("/api/ai/diagnose", {
+    mutationFn: (nextQuestion: string) => api<{ diagnosis?: DiagnosisDetail; mode?: string }>("/api/ai/diagnose:agent", {
       method: "POST",
       body: JSON.stringify({
         question: nextQuestion,
@@ -179,7 +179,7 @@ export function AIOpsCopilotPanel({
 
         <section className="aiops-copilot-card">
           <header>当前问题</header>
-          <strong>{latestIncident?.title || diagnosisTitle(activeDiagnosis) || "llm-chat-service 延迟风险"}</strong>
+          <strong>{latestIncident?.title || diagnosisTitle(activeDiagnosis) || "生产服务待诊断"}</strong>
           <div className="aiops-copilot-pills">
             <span>{p95 ? `P95 ${fmt(p95, 0)}ms` : latestIncident ? severityLabel(latestIncident.severity) : "实时指标"}</span>
             <span>{ttft ? `TTFT ${fmt(ttft, 0)}ms` : activeDiagnosis?.status ?? "待诊断"}</span>
@@ -250,7 +250,7 @@ export function AIOpsCopilotPanel({
       </form>
 
       <div className="dashboard-copilot-foot">
-        <span>{hasBackendData ? "后端实时数据" : "等待 Go 后端"} · 最后更新：2026-05-31 10:30:45</span>
+        <span>{hasBackendData ? "后端实时数据" : "等待 Go 后端"} · {new Date().toLocaleTimeString("zh-CN", { hour12: false })}</span>
         <RefreshCw size={13} />
       </div>
     </aside>

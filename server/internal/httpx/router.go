@@ -71,15 +71,28 @@ func NewRouter(a *API) *chi.Mux {
 			r.Get("/history", a.metricsHistory)
 			r.Get("/requests", a.metricsRequests)
 		})
+		// Unified platform log index. GET supports DB search and direct Kubernetes
+		// pod tailing; POST is the ingestion entry used by platform components.
+		r.Get("/logs", a.platformLogs)
+		r.Post("/logs", a.ingestPlatformLog)
 
 		// 5A.3：基于当前指标快照的规则化告警评估（取代前端告警表 mock）。
 		r.Get("/alerts", a.alerts)
+		r.Get("/ai/status", a.aiStatus)
 
 		// C3：真实服务拓扑——OTel span 进程内派生的调用图（连线粗细 = 真实 QPS）。
 		r.Get("/topology/graph", a.topologyGraph)
 
 		// Phase 2：写操作 + 平台治理（外形复刻现有 Java 控制面）
 		r.Post("/service-instances/{name}/healthcheck", a.serviceInstanceHealthcheck)
+		// 单机双卡推理实验 workload：服务启停与压测任务启停相互独立。
+		r.Get("/inference/runtime", a.inferenceRuntimeStatus)
+		r.Post("/inference/runtime", a.startInferenceRuntime)
+		r.Delete("/inference/runtime", a.stopInferenceRuntime)
+		r.Get("/inference/releases", a.inferenceReleaseCandidates)
+		r.Post("/inference/releases", a.submitInferenceRelease)
+		r.Delete("/inference/releases/{id}", a.stopInferenceRelease)
+		r.Delete("/inference/serving-models/{model_id}", a.stopInferenceServingModel)
 		// Phase 5 / 5B.2：服务注册表（注册 / 心跳 / 注销）；后台 reaper 据 TTL 清扫。
 		r.Post("/service-instances/register", a.registerServiceInstance)
 		r.Post("/service-instances/{name}/heartbeat", a.heartbeatServiceInstance)
@@ -91,6 +104,7 @@ func NewRouter(a *API) *chi.Mux {
 			r.Get("/items/{id}/versions", a.configVersions)
 			r.Post("/items/{id}/versions", a.publishConfigVersion)
 			r.Post("/items/{id}/rollback", a.rollbackConfigVersion)
+			r.Post("/items/{id}/launch", a.launchConfigVersion)
 		})
 
 		// deployments/incidents 用无尾斜杠形式（对齐 Java @RequestMapping("/api/deployments")）。
@@ -98,6 +112,8 @@ func NewRouter(a *API) *chi.Mux {
 		r.Post("/deployments", a.triggerDeployment)
 		r.Post("/deployments/{id}/finish", a.finishDeployment)
 		r.Post("/deployments/{id}/rollback", a.rollbackDeployment)
+		r.Get("/ci/runs", a.ciRuns)
+		r.Post("/ci/runs", a.triggerCIRun)
 
 		r.Get("/incidents", a.incidents)
 		r.Post("/incidents", a.createIncident)
@@ -140,6 +156,7 @@ func NewRouter(a *API) *chi.Mux {
 		})
 		r.Post("/benchmarks/serving", a.createServingBenchmark)
 		r.Get("/benchmarks/{run_id}", a.benchmarkRun)
+		r.Delete("/benchmarks/{run_id}", a.cancelServingBenchmark)
 		r.Get("/benchmarks/{run_id}/events", a.benchmarkEvents)
 
 		// 6A：evals 组 Go 原生（检索召回评测；依赖 knowledge 检索）。
@@ -176,6 +193,8 @@ func NewRouter(a *API) *chi.Mux {
 		// Phase 3：AI 边界（Go 取证 → Python 推理 → Go 落库+审计）。
 		r.Route("/ai", func(r chi.Router) {
 			r.Post("/diagnose", a.diagnose)
+			r.Get("/inference/evidence", a.inferenceDiagnosisEvidence)
+			r.Get("/training/evidence", a.trainingDiagnosisEvidence)
 			// E1：agentic 诊断（多轮工具取证 + 推理轨迹）。
 			r.Post("/diagnose:agent", a.diagnoseAgent)
 			r.Get("/diagnoses", a.listDiagnoses)
@@ -184,6 +203,16 @@ func NewRouter(a *API) *chi.Mux {
 			if a.AIProxy != nil {
 				r.Post("/chat:stream", a.AIProxy.To("/internal/chat:stream"))
 			}
+		})
+
+		// Phase F：分布式训练（Kubeflow PyTorchJob 生命周期；写受 ALLOW_TRAINING + 命名空间守卫约束）。
+		r.Route("/training", func(r chi.Router) {
+			r.Get("/jobs", a.listTrainingJobs)
+			r.Post("/jobs", a.submitTrainingJob)
+			r.Get("/jobs/{id}", a.getTrainingJob)
+			r.Delete("/jobs/{id}", a.cancelTrainingJob)
+			r.Get("/jobs/{id}/kubernetes", a.trainingJobKubernetes)
+			r.Get("/jobs/{id}/logs", a.trainingJobLogs)
 		})
 
 	})

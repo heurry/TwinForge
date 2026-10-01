@@ -52,6 +52,8 @@ class DiagnoseResponse(BaseModel):
     latency_ms: Optional[float] = None
     mode: str = "stub"  # stub | live —— 排查无 GPU 时为何是假响应
     error: Optional[str] = None
+    category: str = "general"
+    severity: str = "info"  # info | warning | critical
 
 
 class ChatRequest(BaseModel):

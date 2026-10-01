@@ -69,6 +69,9 @@ aiService:
     port: 8200
   env:
     AI_STUB_MODE: "auto"
+    # 不把诊断绑定到固定 27B；部署到集群时可通过 values 覆盖上游地址。
+    AI_LLM_MODEL: "auto"
+    AI_LLM_CANDIDATE_MODELS: "qwen35-4b-customer,qwen3-4b-customer,qwen36-27b-awq,qwen36-27b-fp8"
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "1", memory: 512Mi }

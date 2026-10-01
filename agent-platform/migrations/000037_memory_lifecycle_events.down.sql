@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS agent_platform.idx_memory_lifecycle_events_source;
+DROP INDEX IF EXISTS agent_platform.idx_memory_lifecycle_events_memory;
+DROP INDEX IF EXISTS agent_platform.uq_memory_lifecycle_event_idempotency;
+DROP TABLE IF EXISTS agent_platform.memory_lifecycle_events;

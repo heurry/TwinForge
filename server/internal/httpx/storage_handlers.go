@@ -16,7 +16,7 @@ import (
 // pgTables 是「关系层」面板展示的关键表（行数 + 物理大小）。
 var pgTables = []string{
 	"metrics_samples", "audit_events", "benchmark_samples", "request_traces",
-	"models", "service_instances", "kb_chunks", "chat_messages",
+	"platform_logs", "models", "service_instances", "kb_chunks", "chat_messages", "training_jobs",
 }
 
 func (a *API) storageTiers(w http.ResponseWriter, r *http.Request) {

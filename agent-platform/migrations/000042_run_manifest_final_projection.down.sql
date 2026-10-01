@@ -1,0 +1,2 @@
+-- The projection is derived data; reverting this migration leaves the
+-- append-only Artifact history intact and the next rebuild will recalculate it.

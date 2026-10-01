@@ -64,8 +64,8 @@ export function SettingsPage() {
   return (
     <section className="infra-page settings-replica">
       <PageHeader
-        title="平台设置"
-        subtitle="服务连接、健康探测与运行环境"
+        title="平台状态"
+        subtitle="只读展示服务连接、健康探测与运行环境；可编辑策略统一在对应功能页面管理"
         actions={
           <button className="console-refresh" onClick={refetchAll} type="button">
             <RefreshCw className={healthQuery.isFetching ? "spinning" : undefined} size={14} /> 重新探测

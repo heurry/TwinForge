@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type routingPolicy struct {
 	Enabled     bool             `json:"enabled"`
 	Variants    []routingVariant `json:"variants"`
 	Shadow      *routingTarget   `json:"shadow,omitempty"`
+	Metadata    map[string]any   `json:"metadata,omitempty"`
 	CreatedBy   string           `json:"created_by"`
 	CreatedAt   time.Time        `json:"created_at"`
 	UpdatedAt   time.Time        `json:"updated_at"`
@@ -45,15 +47,16 @@ type routingPolicy struct {
 // loadRoutingPolicy 读单条策略（数据面与控制面共用）。
 func (a *API) loadRoutingPolicy(ctx context.Context, name string) (*routingPolicy, error) {
 	var p routingPolicy
-	var variantsJSON, shadowJSON []byte
+	var variantsJSON, shadowJSON, metadataJSON []byte
 	err := a.Pool.QueryRow(ctx,
-		`SELECT name, description, enabled, variants, shadow, created_by, created_at, updated_at
+		`SELECT name, description, enabled, variants, shadow, metadata, created_by, created_at, updated_at
 		   FROM routing_policies WHERE name = $1`, name).
-		Scan(&p.Name, &p.Description, &p.Enabled, &variantsJSON, &shadowJSON, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.Name, &p.Description, &p.Enabled, &variantsJSON, &shadowJSON, &metadataJSON, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal(variantsJSON, &p.Variants)
+	_ = json.Unmarshal(metadataJSON, &p.Metadata)
 	if len(shadowJSON) > 0 && string(shadowJSON) != "null" {
 		var sh routingTarget
 		if json.Unmarshal(shadowJSON, &sh) == nil && sh.Endpoint != "" {
@@ -68,7 +71,7 @@ type variantStat struct {
 	Label     string  `json:"label"`
 	Endpoint  string  `json:"endpoint"`
 	Count     int64   `json:"count"`
-	Share     float64 `json:"share"`   // 占比 0..1
+	Share     float64 `json:"share"` // 占比 0..1
 	AvgMs     int     `json:"avg_ms"`
 	P95Ms     int     `json:"p95_ms"`
 	ErrorRate float64 `json:"error_rate"`
@@ -152,7 +155,7 @@ func (a *API) shadowStats(ctx context.Context, policy string, windowSec int) ([]
 // GET /api/routing/policies —— 列出全部策略，附最近 1h 各候选份额（实时观测灰度比例）。
 func (a *API) listRoutingPolicies(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.Pool.Query(r.Context(),
-		`SELECT name, description, enabled, variants, shadow, created_by, created_at, updated_at
+		`SELECT name, description, enabled, variants, shadow, metadata, created_by, created_at, updated_at
 		   FROM routing_policies ORDER BY name`)
 	if err != nil {
 		a.fail(w, r, err)
@@ -163,12 +166,13 @@ func (a *API) listRoutingPolicies(w http.ResponseWriter, r *http.Request) {
 	names := []string{}
 	for rows.Next() {
 		var p routingPolicy
-		var variantsJSON, shadowJSON []byte
-		if err := rows.Scan(&p.Name, &p.Description, &p.Enabled, &variantsJSON, &shadowJSON, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var variantsJSON, shadowJSON, metadataJSON []byte
+		if err := rows.Scan(&p.Name, &p.Description, &p.Enabled, &variantsJSON, &shadowJSON, &metadataJSON, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			a.fail(w, r, err)
 			return
 		}
 		_ = json.Unmarshal(variantsJSON, &p.Variants)
+		_ = json.Unmarshal(metadataJSON, &p.Metadata)
 		if len(shadowJSON) > 0 && string(shadowJSON) != "null" {
 			var sh routingTarget
 			if json.Unmarshal(shadowJSON, &sh) == nil && sh.Endpoint != "" {
@@ -178,7 +182,7 @@ func (a *API) listRoutingPolicies(w http.ResponseWriter, r *http.Request) {
 		names = append(names, p.Name)
 		policies = append(policies, map[string]any{
 			"name": p.Name, "description": p.Description, "enabled": p.Enabled,
-			"variants": p.Variants, "shadow": p.Shadow,
+			"variants": p.Variants, "shadow": p.Shadow, "metadata": p.Metadata,
 			"created_by": p.CreatedBy, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt,
 		})
 	}
@@ -191,6 +195,27 @@ func (a *API) listRoutingPolicies(w http.ResponseWriter, r *http.Request) {
 		if vs, err := a.variantStats(r.Context(), name, 3600); err == nil {
 			policies[i]["live"] = vs
 		}
+	}
+	// 路由权重正确并不代表目标实例可用；把候选健康状态一起返回，避免
+	// 生产策略仍指向已停止运行时却只显示“已启用”。
+	endpointStatuses := map[string]string{}
+	if statusRows, statusErr := a.Pool.Query(r.Context(), `SELECT name, status FROM service_instances`); statusErr == nil {
+		for statusRows.Next() {
+			var endpoint, status string
+			if statusRows.Scan(&endpoint, &status) == nil {
+				endpointStatuses[endpoint] = status
+			}
+		}
+		statusRows.Close()
+	}
+	for i := range policies {
+		statuses := map[string]string{}
+		if variants, ok := policies[i]["variants"].([]routingVariant); ok {
+			for _, variant := range variants {
+				statuses[variant.Endpoint] = orDefault(endpointStatuses[variant.Endpoint], "missing")
+			}
+		}
+		policies[i]["endpoint_status"] = statuses
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"policies":       policies,
@@ -455,21 +480,54 @@ func (a *API) promoteRoutingVariant(w http.ResponseWriter, r *http.Request) {
 		a.badRequest(w, r, "no such variant: "+req.Label)
 		return
 	}
-	prevJSON, _ := json.Marshal(cur.Variants)
+	if isAIBrixReleasePolicy(cur) && (a.K8s == nil || !a.AllowK8sWrites) {
+		WriteError(w, r, http.StatusServiceUnavailable, "aibrix_lifecycle_unavailable", "AIBrix 全量需要可用的 Kubernetes 写控制面")
+		return
+	}
+	preparationActions := []any{}
+	if isAIBrixReleasePolicy(cur) {
+		namespace := orDefault(stringValue(cur.Metadata["k8s_namespace"]), "default")
+		action, prepareErr := a.prepareAIBrixPromotion(r.Context(), namespace, next, req.Label)
+		preparationActions = append(preparationActions, action)
+		if prepareErr != nil {
+			transition := map[string]any{"phase": "promotion_preparing", "cleanup_complete": false, "actions": preparationActions, "at": time.Now().UTC().Format(time.RFC3339Nano)}
+			a.persistRoutingResourceTransition(r.Context(), name, transition)
+			WriteError(w, r, http.StatusBadGateway, "aibrix_candidate_not_ready", prepareErr.Error())
+			return
+		}
+	}
+	// Idempotent promotion must retain the original rollback snapshot. This is
+	// also how an already-100% policy can retry a previously missed GPU cleanup.
+	previous := cur.Variants
+	if routingVariantIsFull(cur.Variants, req.Label) {
+		if stored := routingVariantsFromMetadata(cur.Metadata, "prev_variants"); len(stored) > 0 {
+			previous = stored
+		}
+	}
+	prevJSON, _ := json.Marshal(previous)
 	nextJSON, _ := json.Marshal(next)
 	operator := a.actor(r, req.Operator)
 	_, err = a.Pool.Exec(r.Context(),
 		`UPDATE routing_policies
-		    SET variants=$2, metadata=jsonb_set(COALESCE(metadata,'{}'::jsonb), '{prev_variants}', $3::jsonb), updated_at=now()
+		    SET variants=$2,
+		        metadata=jsonb_set(jsonb_set(COALESCE(metadata,'{}'::jsonb), '{prev_variants}', $3::jsonb), '{rollout_phase}', '"full"'::jsonb),
+		        updated_at=now()
 		  WHERE name=$1`, name, nextJSON, prevJSON)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
+	transition := map[string]any{"phase": "promoted", "cleanup_complete": true, "actions": []any{}}
+	if isAIBrixReleasePolicy(cur) {
+		namespace := orDefault(stringValue(cur.Metadata["k8s_namespace"]), "default")
+		transition = a.promoteAIBrixWorkloads(r.Context(), namespace, next, previous, req.Label, preparationActions)
+		a.persistRoutingResourceTransition(r.Context(), name, transition)
+	}
 	a.Store.Audit(r.Context(), operator, "operator", "routing.promote", "routing_policy", name,
-		map[string]any{"label": req.Label})
+		map[string]any{"label": req.Label, "resource_transition": transition})
+	deploymentID := a.recordRoutingDeployment(r.Context(), name, req.Label, operator, "promoted", cur.Variants, next)
 	pol, _ := a.loadRoutingPolicy(r.Context(), name)
-	WriteJSON(w, http.StatusOK, map[string]any{"policy": pol, "promoted": req.Label})
+	WriteJSON(w, http.StatusOK, map[string]any{"policy": pol, "promoted": req.Label, "deployment_id": nilIfEmpty(deploymentID), "resource_transition": transition})
 }
 
 // POST /api/routing/policies/{name}/rollback —— 回滚到全量前的权重快照（metadata.prev_variants）。
@@ -479,9 +537,7 @@ func (a *API) rollbackRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 		Operator string `json:"operator"`
 	}
 	_ = decodeBody(r, &req)
-	var prevJSON []byte
-	err := a.Pool.QueryRow(r.Context(),
-		`SELECT metadata->'prev_variants' FROM routing_policies WHERE name=$1`, name).Scan(&prevJSON)
+	cur, err := a.loadRoutingPolicy(r.Context(), name)
 	if err != nil {
 		if isNoRows(err) {
 			WriteError(w, r, http.StatusNotFound, "not_found", "routing policy not found")
@@ -490,26 +546,299 @@ func (a *API) rollbackRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	if len(prevJSON) == 0 || string(prevJSON) == "null" {
+	prev := routingVariantsFromMetadata(cur.Metadata, "prev_variants")
+	if len(prev) == 0 {
 		a.badRequest(w, r, "no previous weights to roll back to")
 		return
 	}
-	var prev []routingVariant
-	if json.Unmarshal(prevJSON, &prev) != nil || validateVariants(prev) != "" {
+	if validateVariants(prev) != "" {
 		a.badRequest(w, r, "stored previous weights are invalid")
 		return
+	}
+	if isAIBrixReleasePolicy(cur) && (a.K8s == nil || !a.AllowK8sWrites) {
+		WriteError(w, r, http.StatusServiceUnavailable, "aibrix_lifecycle_unavailable", "AIBrix 回滚需要可用的 Kubernetes 写控制面")
+		return
+	}
+	transition := map[string]any{"phase": "rolled_back", "cleanup_complete": true, "actions": []any{}}
+	if isAIBrixReleasePolicy(cur) {
+		namespace := orDefault(stringValue(cur.Metadata["k8s_namespace"]), "default")
+		transition, err = a.prepareAIBrixRollback(r.Context(), namespace, prev)
+		if err != nil {
+			a.persistRoutingResourceTransition(r.Context(), name, transition)
+			WriteError(w, r, http.StatusBadGateway, "aibrix_rollback_not_ready", err.Error())
+			return
+		}
 	}
 	restoreJSON, _ := json.Marshal(prev)
 	operator := a.actor(r, req.Operator)
 	_, err = a.Pool.Exec(r.Context(),
 		`UPDATE routing_policies
-		    SET variants=$2, metadata=(COALESCE(metadata,'{}'::jsonb) - 'prev_variants'), updated_at=now()
+		    SET variants=$2,
+		        metadata=jsonb_set((COALESCE(metadata,'{}'::jsonb) - 'prev_variants'), '{rollout_phase}', '"canary"'::jsonb),
+		        updated_at=now()
 		  WHERE name=$1`, name, restoreJSON)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	a.Store.Audit(r.Context(), operator, "operator", "routing.rollback", "routing_policy", name, map[string]any{})
+	if isAIBrixReleasePolicy(cur) {
+		namespace := orDefault(stringValue(cur.Metadata["k8s_namespace"]), "default")
+		transition = a.finishAIBrixRollback(r.Context(), namespace, cur.Variants, prev, transition)
+		a.persistRoutingResourceTransition(r.Context(), name, transition)
+	}
+	a.Store.Audit(r.Context(), operator, "operator", "routing.rollback", "routing_policy", name, map[string]any{"resource_transition": transition})
+	deploymentID := a.recordRoutingDeployment(r.Context(), name, "previous-weights", operator, "rolled_back", nil, prev)
 	pol, _ := a.loadRoutingPolicy(r.Context(), name)
-	WriteJSON(w, http.StatusOK, map[string]any{"policy": pol, "rolled_back": true})
+	WriteJSON(w, http.StatusOK, map[string]any{"policy": pol, "rolled_back": true, "deployment_id": nilIfEmpty(deploymentID), "resource_transition": transition})
+}
+
+func isAIBrixReleasePolicy(policy *routingPolicy) bool {
+	return policy != nil && stringValue(policy.Metadata["source"]) == "model_release" && stringValue(policy.Metadata["release_target"]) == "aibrix"
+}
+
+func routingVariantIsFull(variants []routingVariant, label string) bool {
+	for _, variant := range variants {
+		if (variant.Label == label && variant.Weight != 100) || (variant.Label != label && variant.Weight != 0) {
+			return false
+		}
+	}
+	return len(variants) > 0
+}
+
+func routingVariantsFromMetadata(metadata map[string]any, key string) []routingVariant {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var variants []routingVariant
+	if json.Unmarshal(raw, &variants) != nil {
+		return nil
+	}
+	return variants
+}
+
+func (a *API) aibrixDeploymentForVariant(ctx context.Context, variant routingVariant) (string, error) {
+	var deployment string
+	err := a.Pool.QueryRow(ctx, `SELECT COALESCE(metadata->>'k8s_deployment','') FROM service_instances WHERE name=$1`, variant.Endpoint).Scan(&deployment)
+	if err != nil && !isNoRows(err) {
+		return "", err
+	}
+	if deployment == "" {
+		deployment = strings.TrimSpace(variant.Model)
+	}
+	if deployment == "" {
+		return "", nil
+	}
+	return deployment, nil
+}
+
+func transitionAction(operation, deployment, model, status, detail string) map[string]any {
+	return map[string]any{"operation": operation, "deployment": deployment, "model": model, "status": status, "detail": detail}
+}
+
+func transitionActions(transition map[string]any) []any {
+	actions, _ := transition["actions"].([]any)
+	return actions
+}
+
+func (a *API) prepareAIBrixPromotion(ctx context.Context, namespace string, next []routingVariant, promotedLabel string) (map[string]any, error) {
+	var promoted routingVariant
+	for _, variant := range next {
+		if variant.Label == promotedLabel {
+			promoted = variant
+			break
+		}
+	}
+	deployment, err := a.aibrixDeploymentForVariant(ctx, promoted)
+	if err != nil || deployment == "" {
+		detail := orDefault(errorString(err), "deployment binding missing")
+		return transitionAction("prewarm", deployment, promoted.Model, "failed", detail), fmt.Errorf("cannot prepare promoted model %s: %s", promoted.Model, detail)
+	}
+	if err := a.K8s.ScaleAIBrixModelDeployment(ctx, namespace, deployment, 1); err != nil {
+		return transitionAction("prewarm", deployment, promoted.Model, "failed", err.Error()), fmt.Errorf("scale promoted workload %s: %w", deployment, err)
+	}
+	if err := a.waitAIBrixWorkloadReady(ctx, namespace, deployment, promoted.Model); err != nil {
+		return transitionAction("prewarm", deployment, promoted.Model, "failed", err.Error()), err
+	}
+	return transitionAction("prewarm", deployment, promoted.Model, "success", "Pod and AIBrix route ready before traffic switch"), nil
+}
+
+func (a *API) promoteAIBrixWorkloads(ctx context.Context, namespace string, next, previous []routingVariant, promotedLabel string, preparationActions []any) map[string]any {
+	transition := map[string]any{"phase": "promoted", "cleanup_complete": true, "actions": []any{}, "at": time.Now().UTC().Format(time.RFC3339Nano)}
+	actions := append([]any{}, preparationActions...)
+	var promoted routingVariant
+	for _, variant := range next {
+		if variant.Label == promotedLabel {
+			promoted = variant
+			break
+		}
+	}
+	promotedDeployment, err := a.aibrixDeploymentForVariant(ctx, promoted)
+	if err != nil || promotedDeployment == "" {
+		transition["cleanup_complete"] = false
+		actions = append(actions, transitionAction("mark_stable", promotedDeployment, promoted.Model, "failed", orDefault(errorString(err), "deployment binding missing")))
+	} else if err := a.K8s.SetAIBrixModelDeploymentTrack(ctx, namespace, promotedDeployment, "stable"); err != nil {
+		transition["cleanup_complete"] = false
+		actions = append(actions, transitionAction("mark_stable", promotedDeployment, promoted.Model, "failed", err.Error()))
+	} else {
+		actions = append(actions, transitionAction("mark_stable", promotedDeployment, promoted.Model, "success", "candidate promoted without Pod restart"))
+		transition["stable_deployment"] = promotedDeployment
+	}
+
+	seen := map[string]bool{}
+	for _, variant := range previous {
+		if variant.Label == promotedLabel || variant.Weight <= 0 || variant.Model == promoted.Model {
+			continue
+		}
+		deployment, resolveErr := a.aibrixDeploymentForVariant(ctx, variant)
+		if resolveErr != nil || deployment == "" || seen[deployment] {
+			if resolveErr != nil || deployment == "" {
+				transition["cleanup_complete"] = false
+				actions = append(actions, transitionAction("scale_down", deployment, variant.Model, "failed", orDefault(errorString(resolveErr), "deployment binding missing")))
+			}
+			continue
+		}
+		seen[deployment] = true
+		if err := a.K8s.ScaleAIBrixModelDeployment(ctx, namespace, deployment, 0); err != nil {
+			transition["cleanup_complete"] = false
+			actions = append(actions, transitionAction("scale_down", deployment, variant.Model, "failed", err.Error()))
+		} else {
+			actions = append(actions, transitionAction("scale_down", deployment, variant.Model, "success", "replicas=0; GPU released"))
+		}
+	}
+	transition["actions"] = actions
+	return transition
+}
+
+func (a *API) prepareAIBrixRollback(ctx context.Context, namespace string, previous []routingVariant) (map[string]any, error) {
+	transition := map[string]any{"phase": "rollback_preparing", "cleanup_complete": false, "actions": []any{}, "at": time.Now().UTC().Format(time.RFC3339Nano)}
+	actions := []any{}
+	seen := map[string]bool{}
+	for _, variant := range previous {
+		if variant.Weight <= 0 {
+			continue
+		}
+		deployment, err := a.aibrixDeploymentForVariant(ctx, variant)
+		if err != nil || deployment == "" {
+			detail := orDefault(errorString(err), "deployment binding missing")
+			actions = append(actions, transitionAction("prewarm", deployment, variant.Model, "failed", detail))
+			transition["actions"] = actions
+			return transition, fmt.Errorf("cannot restore %s: %s", variant.Model, detail)
+		}
+		if seen[deployment] {
+			continue
+		}
+		seen[deployment] = true
+		if err := a.K8s.ScaleAIBrixModelDeployment(ctx, namespace, deployment, 1); err != nil {
+			actions = append(actions, transitionAction("prewarm", deployment, variant.Model, "failed", err.Error()))
+			transition["actions"] = actions
+			return transition, fmt.Errorf("scale rollback workload %s: %w", deployment, err)
+		}
+		if err := a.waitAIBrixWorkloadReady(ctx, namespace, deployment, variant.Model); err != nil {
+			actions = append(actions, transitionAction("prewarm", deployment, variant.Model, "failed", err.Error()))
+			transition["actions"] = actions
+			return transition, err
+		}
+		_ = a.K8s.SetAIBrixModelDeploymentTrack(ctx, namespace, deployment, "stable")
+		actions = append(actions, transitionAction("prewarm", deployment, variant.Model, "success", "Pod and AIBrix route ready"))
+	}
+	transition["actions"] = actions
+	transition["phase"] = "rollback_ready"
+	return transition, nil
+}
+
+func (a *API) waitAIBrixWorkloadReady(ctx context.Context, namespace, deployment, model string) error {
+	deadline := time.Now().Add(inferenceReleaseTimeout)
+	gatewayBaseURL := a.aibrixGatewayEndpoint()
+	for {
+		status, err := a.K8s.RolloutStatus(ctx, namespace, deployment)
+		if err == nil && status.Failed {
+			return fmt.Errorf("rollback workload %s failed: %s", deployment, status.Message)
+		}
+		if err == nil && status.Complete {
+			_, _, detail, probeErr := probeAIBrix(ctx, gatewayBaseURL, model)
+			if probeErr == nil {
+				return nil
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("AIBrix route for %s timed out: %v: %s", model, probeErr, detail)
+			}
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("rollback workload %s readiness timed out: %w", deployment, err)
+			}
+			return fmt.Errorf("rollback workload %s readiness timed out", deployment)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func (a *API) finishAIBrixRollback(ctx context.Context, namespace string, current, restored []routingVariant, transition map[string]any) map[string]any {
+	actions := transitionActions(transition)
+	transition["cleanup_complete"] = true
+	restoredWeights := map[string]int{}
+	for _, variant := range restored {
+		restoredWeights[variant.Label] = variant.Weight
+	}
+	seen := map[string]bool{}
+	for _, variant := range current {
+		if restoredWeights[variant.Label] > 0 {
+			continue
+		}
+		deployment, err := a.aibrixDeploymentForVariant(ctx, variant)
+		if err != nil || deployment == "" || seen[deployment] {
+			if err != nil {
+				transition["cleanup_complete"] = false
+				actions = append(actions, transitionAction("scale_down", deployment, variant.Model, "failed", err.Error()))
+			}
+			continue
+		}
+		seen[deployment] = true
+		if err := a.K8s.ScaleAIBrixModelDeployment(ctx, namespace, deployment, 0); err != nil {
+			transition["cleanup_complete"] = false
+			actions = append(actions, transitionAction("scale_down", deployment, variant.Model, "failed", err.Error()))
+		} else {
+			actions = append(actions, transitionAction("scale_down", deployment, variant.Model, "success", "zero-weight candidate reclaimed"))
+		}
+	}
+	transition["phase"] = "rolled_back"
+	transition["actions"] = actions
+	transition["at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	return transition
+}
+
+func (a *API) persistRoutingResourceTransition(ctx context.Context, policy string, transition map[string]any) {
+	raw, _ := json.Marshal(transition)
+	_, _ = a.Pool.Exec(ctx, `UPDATE routing_policies SET metadata=jsonb_set(COALESCE(metadata,'{}'::jsonb),'{resource_transition}',$2::jsonb), updated_at=now() WHERE name=$1`, policy, raw)
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func (a *API) recordRoutingDeployment(ctx context.Context, policy, version, operator, phase string, previous, next []routingVariant) string {
+	meta := map[string]any{
+		"owner": operator, "mode": "routing_canary", "phase": phase, "routing_policy": policy,
+		"previous_variants": previous, "variants": next,
+	}
+	id, err := a.Store.CreateDeploymentMeta(ctx, "routing/"+policy, version, "prod", meta)
+	if err != nil {
+		return ""
+	}
+	_, _ = a.Store.FinishDeployment(ctx, id, "success")
+	_ = a.recordPlatformLog(ctx, platformLogInput{Level: "info", Source: "routing-controller", ResourceType: "deployment", ResourceID: id,
+		Message: "routing policy " + phase, Attributes: meta})
+	return id
 }

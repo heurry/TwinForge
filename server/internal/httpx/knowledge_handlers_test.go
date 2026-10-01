@@ -21,6 +21,14 @@ import (
 // mockEmbedVec：确定性 1024 维单位向量（不同文本 → 不同分量）。
 func mockEmbedVec(s string) []float32 {
 	v := make([]float32, 1024)
+	// Keep this test's query and its seeded benchmark in the same semantic
+	// bucket. Hash-only one-hot vectors made unrelated documents tie at score 0,
+	// so a shared integration database could decide top_k only by row order.
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "kn-run-1") {
+		v[0] = 1
+		return v
+	}
 	h := 0
 	for _, c := range s {
 		h = h*31 + int(c)
@@ -115,7 +123,7 @@ func TestKnowledgeRebuildSearch(t *testing.T) {
 	}
 
 	// search → 返回该文档。
-	sr := do(http.MethodGet, "/api/knowledge/search?q=p95+latency&top_k=4")
+	sr := do(http.MethodGet, "/api/knowledge/search?q=kn-run-1+p95+latency&top_k=4")
 	if sr.Code != http.StatusOK {
 		t.Fatalf("search status %d: %s", sr.Code, sr.Body.String())
 	}

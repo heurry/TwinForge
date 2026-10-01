@@ -1,442 +1,484 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Bot, CheckCircle, Database, Eye, FileText, GitBranch, MoreVertical, Plus, RefreshCw, Search, Server, ShieldCheck, Sparkles, Users } from "lucide-react";
+import {
+  Activity, AlertTriangle, CheckCircle, Cpu, Database, FileText, Gauge,
+  GraduationCap, Play, RefreshCw, Search, Server, SquareTerminal, Zap
+} from "lucide-react";
 
-import { useGoToPage } from "../lib/useGoToPage";
-
-import { KpiGrid, PageHeader, PanelHeader, StatusBadge } from "../components/common/PlatformPrimitives";
 import { EmptyState, ErrorState, Skeleton } from "../components/common/FeedbackStates";
+import { KpiGrid, PageHeader, PanelHeader, StatusBadge } from "../components/common/PlatformPrimitives";
 import { api } from "../lib/api";
 import { fmt } from "../lib/format";
-import type { ConfigItem, Deployment, Incident } from "../types/ops";
-import type { KubernetesSnapshot, Metrics } from "../types/platform";
+import { useDeliveryContext } from "../lib/useDeliveryContext";
+import type { Incident } from "../types/ops";
 import type { KpiItem } from "../types/ui";
 
-type DiagnosisListItem = {
+type Scope = "inference" | "training";
+type EvidenceItem = { label: string; detail: string; source: string };
+type RecommendedAction = { action: string; risk: string; impact: string };
+type RelatedResource = { type: string; id?: string | null; name?: string | null };
+type Diagnosis = {
   id: string;
   question: string;
   status: string;
   root_cause?: string | null;
   confidence?: number | null;
+  impact?: string | null;
+  evidence?: EvidenceItem[];
+  recommended_actions?: RecommendedAction[];
+  related_resources?: RelatedResource[];
+  model_id?: string | null;
+  error?: string | null;
   created_at?: string;
+  category?: string;
+  severity?: string;
 };
-
-// E1：agentic 诊断响应（多轮取证轨迹）。
-type AgentTraceStep = { step: number; tool: string; summary: string };
-type AgentDiagnoseResult = { mode: string; steps: number; trace: AgentTraceStep[]; rootCause?: string };
-
-type AiOpsIncidentRow = {
+type DiagnosisResponse = {
+  diagnosis: Diagnosis;
+  mode?: string;
+  incident_id?: string | null;
+  incident_created?: boolean;
+};
+type AIStatus = {
+  status?: string;
+  llm_connected?: boolean;
+  effective_mode?: string;
+  model?: string;
+  configured_model?: string;
+  model_selection?: string;
+  available_models?: string[];
+  llm_base_url?: string;
+  llm_error?: string;
+  error?: string;
+};
+type Scenario = {
+  context_length?: number;
+  concurrency?: number;
+  success_rate?: number;
+  quality_gate_pass_rate?: number;
+  p95_ttft_ms?: number;
+  p95_tpot_ms?: number;
+  p95_ms?: number;
+  output_throughput_tokens_per_second?: number;
+  gpu_after?: { max_memory_utilization_percent?: number };
+};
+type InferenceEvidence = {
+  inference: {
+    benchmark: {
+      run_id: string;
+      endpoint_id?: string;
+      workload?: string;
+      prefix_caching?: boolean;
+      chunked_prefill?: boolean;
+      max_num_seqs?: number;
+      max_num_batched_tokens?: number;
+      summary?: { scenarios?: Scenario[] };
+      updated_at?: string;
+      config?: { vllm?: Record<string, unknown> };
+    };
+    baseline?: { run_id?: string; summary?: { scenarios?: Scenario[] } };
+    runtime?: Record<string, unknown>;
+    gpu?: Record<string, unknown>;
+  };
+};
+type TrainingJob = {
   id: string;
-  rawId?: string;
-  severity: string;
-  title: string;
-  service: string;
-  signal: string;
-  confidence: string;
+  name: string;
   status: string;
-  duration: string;
+  namespace: string;
+  base_model: string;
+  dataset_uri?: string | null;
+  workers: number;
+  gpus_per_worker: number;
+  k8s_job_ref?: string | null;
+  output_artifact_uri?: string | null;
+  updated_at?: string;
+};
+type TrainingEvidence = {
+  training: {
+    job: TrainingJob;
+    pytorch_job?: { available?: boolean; phase?: string; reason?: string; message?: string; replica_statuses?: Record<string, unknown> };
+    pod?: { pod?: string | null; available?: boolean; logs?: string; error?: string };
+    gpu?: Record<string, unknown>;
+  };
 };
 
 export function AIOpsPage() {
-  const goTo = useGoToPage();
   const queryClient = useQueryClient();
+  const { context, update } = useDeliveryContext();
+  const [scope, setScope] = useState<Scope>(context.deliveryKind ?? "inference");
+  const [selectedDiagnosisID, setSelectedDiagnosisID] = useState(context.diagnosisId ?? "");
+  const [question, setQuestion] = useState("");
   const [incidentSearch, setIncidentSearch] = useState("");
   const [severityFilter, setSeverityFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  // E1：agentic 诊断的推理轨迹（最近一次 Agent 诊断的多轮取证）。
-  const [agentResult, setAgentResult] = useState<AgentDiagnoseResult | null>(null);
+  const previousTarget = useRef("");
+  const targetKey = `${scope}:${context.benchmarkRunId || context.trainingJobId || "history"}`;
+
+  useEffect(() => {
+    if (previousTarget.current && previousTarget.current !== targetKey) setSelectedDiagnosisID("");
+    previousTarget.current = targetKey;
+  }, [targetKey]);
+
+  const inferenceQuery = useQuery({
+    queryKey: ["ai", "inference", "evidence", context.benchmarkRunId ?? "latest"],
+    queryFn: () => api<InferenceEvidence>(`/api/ai/inference/evidence${context.benchmarkRunId ? `?run_id=${encodeURIComponent(context.benchmarkRunId)}` : ""}`),
+    retry: false,
+    refetchInterval: 15000,
+  });
+  const aiStatusQuery = useQuery({
+    queryKey: ["ai", "status"],
+    queryFn: () => api<AIStatus>("/api/ai/status"),
+    refetchInterval: 10_000,
+    retry: false,
+  });
+  const trainingQuery = useQuery({
+    queryKey: ["ai", "training", "evidence", context.trainingJobId ?? "latest"],
+    queryFn: () => api<TrainingEvidence>(`/api/ai/training/evidence${context.trainingJobId ? `?job_id=${encodeURIComponent(context.trainingJobId)}` : ""}`),
+    retry: false,
+    refetchInterval: 15000,
+  });
   const incidentsQuery = useQuery({
     queryKey: ["incidents", "aiops"],
     queryFn: () => api<{ incidents: Incident[] }>("/api/incidents"),
-    refetchInterval: 15000
+    refetchInterval: 15000,
   });
   const diagnosesQuery = useQuery({
     queryKey: ["ai", "diagnoses"],
-    queryFn: () => api<{ diagnoses: DiagnosisListItem[] }>("/api/ai/diagnoses?limit=20"),
-    refetchInterval: 15000
+    queryFn: () => api<{ diagnoses: Diagnosis[] }>("/api/ai/diagnoses?limit=20"),
+    refetchInterval: 15000,
   });
-  const metricsQuery = useQuery({
-    queryKey: ["metrics", "current"],
-    queryFn: () => api<Metrics>("/api/metrics/current"),
-    refetchInterval: 5000
-  });
-  const k8sQuery = useQuery({
-    queryKey: ["kubernetes", "snapshot"],
-    queryFn: () => api<KubernetesSnapshot>("/api/kubernetes/snapshot"),
-    refetchInterval: 15000
-  });
-  const configQuery = useQuery({
-    queryKey: ["config", "items"],
-    queryFn: () => api<{ items: ConfigItem[] }>("/api/config/items"),
-    refetchInterval: 15000
-  });
-  const deploymentsQuery = useQuery({
-    queryKey: ["deployments", "aiops"],
-    queryFn: () => api<{ deployments: Deployment[] }>("/api/deployments"),
-    refetchInterval: 15000
-  });
-
-  const createIncidentMutation = useMutation({
-    mutationFn: () => api<{ id: string; status: string }>("/api/incidents", {
-      method: "POST",
-      body: JSON.stringify({
-        title: "llm-chat-service 延迟升高",
-        severity: "critical",
-        summary: "llm-chat-service P95 256ms / TTFT 186ms，建议进入 AI Ops 诊断",
-        operator: "frontend"
-      })
-    }),
-    onSuccess: (payload) => {
-      toast.success("Incident 已创建", { description: payload.id.slice(0, 8) });
-      queryClient.invalidateQueries({ queryKey: ["incidents", "aiops"] });
-    },
-    onError: (error) => toast.error("创建 Incident 失败", { description: describeAIOpsError(error) })
+  const diagnoses = useMemo(() => diagnosesQuery.data?.diagnoses ?? [], [diagnosesQuery.data]);
+  useEffect(() => {
+    if (context.deliveryKind && context.deliveryKind !== scope) setScope(context.deliveryKind);
+  }, [context.deliveryKind, scope]);
+  useEffect(() => {
+    // 有明确 Run/Job 时不能沿用全局最新诊断（可能属于另一模型）；
+    // 当前专项诊断由成功回调显式选中。无交付上下文时才展示历史最新记录。
+    if (context.diagnosisId && !context.benchmarkRunId && !context.trainingJobId && context.diagnosisId !== selectedDiagnosisID) {
+      setSelectedDiagnosisID(context.diagnosisId);
+    }
+  }, [context.diagnosisId, context.benchmarkRunId, context.trainingJobId, selectedDiagnosisID]);
+  useEffect(() => {
+    if (!selectedDiagnosisID && !context.benchmarkRunId && !context.trainingJobId && diagnoses[0]?.id) setSelectedDiagnosisID(diagnoses[0].id);
+  }, [diagnoses, selectedDiagnosisID, context.benchmarkRunId, context.trainingJobId]);
+  const diagnosisQuery = useQuery({
+    queryKey: ["ai", "diagnosis", selectedDiagnosisID],
+    queryFn: () => api<{ diagnosis: Diagnosis }>(`/api/ai/diagnoses/${selectedDiagnosisID}`),
+    enabled: Boolean(selectedDiagnosisID),
   });
 
   const diagnoseMutation = useMutation({
-    mutationFn: () => api<{ diagnosis?: { id?: string; status?: string }; mode?: string }>("/api/ai/diagnose", {
+    mutationFn: (target: Scope) => api<DiagnosisResponse>("/api/ai/diagnose", {
       method: "POST",
       body: JSON.stringify({
-        question: "请基于当前 metrics、Kubernetes、配置和发布记录诊断 llm-chat-service 延迟升高的根因，并给出修复建议。",
-        max_tokens: 768,
+        scope: target,
+        question: question.trim() || (target === "inference"
+          ? "请基于指定 vLLM 压测、运行时和 GPU 证据，检查请求成功率与输出正确性门禁，并对 TTFT、TPOT 瓶颈进行归因和给出下一轮控制变量实验。"
+          : "请基于指定训练台账、PyTorchJob 状态、Pod 日志、GPU 和产物证据，诊断 LoRA 微调任务并给出修复建议。"),
+        benchmark_run_id: target === "inference" ? context.benchmarkRunId : undefined,
+        training_job_id: target === "training" ? context.trainingJobId : undefined,
+        create_incident: true,
+        // 诊断包含证据、动作和关联资源；768 容易截断 JSON，至少保留 1536 tokens。
+        max_tokens: 1536,
         temperature: 0.2,
-        operator: "frontend"
+        operator: "frontend",
       }),
-      timeoutMs: 60_000
+      timeoutMs: 60_000,
     }),
-    onSuccess: (payload) => {
-      toast.success("AI 诊断已完成", { description: payload.diagnosis?.id?.slice(0, 8) ?? payload.mode ?? "diagnosis" });
-      queryClient.invalidateQueries({ queryKey: ["ai", "diagnoses"] });
-    },
-    onError: (error) => toast.error("AI 诊断失败", { description: describeAIOpsError(error) })
-  });
-
-  // E1：agentic 诊断——模型多轮调用只读工具取证后下结论，返回推理轨迹。
-  const agentDiagnoseMutation = useMutation({
-    mutationFn: () =>
-      api<{ diagnosis?: { root_cause?: string }; mode?: string; steps?: number; trace?: AgentTraceStep[] }>(
-        "/api/ai/diagnose:agent",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            question: "请按需查指标/部署/故障/k8s 等证据，诊断当前 serving 是否存在异常并给出根因与修复建议。",
-            max_tokens: 768,
-            temperature: 0.2,
-            operator: "frontend"
-          }),
-          timeoutMs: 120_000
-        }
-      ),
-    onSuccess: (payload) => {
-      setAgentResult({
-        mode: payload.mode ?? "",
-        steps: payload.steps ?? 0,
-        trace: payload.trace ?? [],
-        rootCause: payload.diagnosis?.root_cause ?? undefined
+    onSuccess: (payload, target) => {
+      setSelectedDiagnosisID(payload.diagnosis.id);
+      setQuestion("");
+      update({ deliveryKind: target, diagnosisId: payload.diagnosis.id });
+      toast.success("专项诊断已完成", {
+        description: payload.incident_created
+          ? `已关联新 Incident ${payload.incident_id?.slice(0, 8)}`
+          : `${payload.diagnosis.id.slice(0, 8)} · ${payload.mode ?? "diagnosis"}`,
       });
-      toast.success(`Agent 诊断完成（${payload.steps ?? 0} 步取证 · ${payload.mode ?? ""}）`);
       queryClient.invalidateQueries({ queryKey: ["ai", "diagnoses"] });
-    },
-    onError: (error) => toast.error("Agent 诊断失败", { description: describeAIOpsError(error) })
-  });
-
-  const incidentTransitionMutation = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: "ack" | "resolve" }) => api<{ id: string; status: string }>(`/api/incidents/${id}/${action}`, {
-      method: "POST",
-      body: JSON.stringify({ operator: "frontend" })
-    }),
-    onSuccess: (payload) => {
-      toast.success("Incident 状态已更新", { description: `${payload.id.slice(0, 8)} · ${payload.status}` });
       queryClient.invalidateQueries({ queryKey: ["incidents", "aiops"] });
     },
-    onError: (error) => toast.error("Incident 操作失败", { description: describeAIOpsError(error) })
+    onError: (error) => toast.error("专项诊断失败", { description: describeError(error) }),
+  });
+  const incidentTransitionMutation = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "ack" | "resolve" }) =>
+      api(`/api/incidents/${id}/${action}`, { method: "POST", body: JSON.stringify({ operator: "frontend" }) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["incidents", "aiops"] }),
+    onError: (error) => toast.error("Incident 操作失败", { description: describeError(error) }),
   });
 
-  const incidents = useMemo(() => deriveIncidents(incidentsQuery.data?.incidents), [incidentsQuery.data?.incidents]);
-  const severityOptions = useMemo(() => Array.from(new Set(incidents.map((row) => row.severity))).sort(), [incidents]);
-  const statusOptions = useMemo(() => Array.from(new Set(incidents.map((row) => row.status))).sort(), [incidents]);
-  const filteredIncidents = useMemo(() => {
-    const q = incidentSearch.trim().toLowerCase();
-    return incidents.filter((row) =>
-      (severityFilter === "all" || row.severity === severityFilter) &&
-      (statusFilter === "all" || row.status === statusFilter) &&
-      (!q || `${row.id} ${row.title} ${row.service}`.toLowerCase().includes(q))
-    );
-  }, [incidents, incidentSearch, severityFilter, statusFilter]);
-  const diagnoses = useMemo(() => diagnosesQuery.data?.diagnoses ?? [], [diagnosesQuery.data]);
-  const diagnosisCount = diagnoses.length;
-  const confidences = diagnoses.map((item) => item.confidence ?? 0).filter((value) => value > 0);
-  const topConfidence = confidences.length ? Math.round(Math.max(...confidences) * 100) : null;
-  const latestDiagnosis = diagnoses[0];
-  const metrics = metricsQuery.data;
-  const contextItems = useMemo(
-    () => buildAiOpsContext(metrics, k8sQuery.data, configQuery.data?.items, deploymentsQuery.data?.deployments),
-    [metrics, k8sQuery.data, configQuery.data?.items, deploymentsQuery.data?.deployments]
-  );
-  const evidenceList = useMemo(() => buildEvidenceList(metrics, latestDiagnosis), [metrics, latestDiagnosis]);
-  const criticalCount = incidents.filter((item) => item.severity === "严重").length;
-  const warningCount = incidents.filter((item) => item.severity === "警告").length;
-  const p95 = metrics?.p95_latency_ms ?? null;
-  const busy = createIncidentMutation.isPending || diagnoseMutation.isPending || agentDiagnoseMutation.isPending || incidentTransitionMutation.isPending;
+  const activeEvidenceQuery = scope === "inference" ? inferenceQuery : trainingQuery;
+  const evidenceReady = activeEvidenceQuery.isSuccess;
+  const storedDiagnosis = diagnosisQuery.data?.diagnosis;
+  // 兼容历史版本把未解析 JSON 直接写进 root_cause 的记录，避免前端展示一大段原文。
+  const embeddedRca = extractEmbeddedRca(storedDiagnosis?.root_cause);
+  const diagnosis: Diagnosis | undefined = embeddedRca && storedDiagnosis ? { ...storedDiagnosis, ...embeddedRca } : storedDiagnosis;
+  const classification = embeddedRca?.classification ?? parseClassification(diagnosis?.evidence);
+  const inference = inferenceQuery.data?.inference;
+  const training = trainingQuery.data?.training;
+  const scenarios = inference?.benchmark.summary?.scenarios ?? [];
+  const worst = [...scenarios].sort((a, b) => (b.p95_ttft_ms ?? 0) - (a.p95_ttft_ms ?? 0))[0];
+  const minSuccess = scenarios.length ? Math.min(...scenarios.map((item) => item.success_rate ?? 0)) : null;
+  const gpuPeak = scenarios.length ? Math.max(...scenarios.map((item) => item.gpu_after?.max_memory_utilization_percent ?? 0)) : null;
+  const incidents = incidentsQuery.data?.incidents ?? [];
+  const filteredIncidents = incidents.filter((incident) => {
+    const query = incidentSearch.trim().toLowerCase();
+    return (severityFilter === "all" || incident.severity === severityFilter)
+      && (!query || `${incident.id} ${incident.title} ${incident.summary ?? ""}`.toLowerCase().includes(query));
+  });
+  const busy = diagnoseMutation.isPending || incidentTransitionMutation.isPending;
 
-  const kpis: KpiItem[] = [
-    { id: "incidents", label: "打开的 Incident", value: String(incidents.length), detail: `${criticalCount} 严重 · ${warningCount} 警告`, trend: [], tone: criticalCount ? "danger" : warningCount ? "warning" : "success" },
-    { id: "confidence", label: "诊断置信度", value: topConfidence == null ? "—" : `${topConfidence}%`, detail: "最高置信度", trend: [], tone: "success" },
-    { id: "latency", label: "P95 延迟", value: p95 == null ? "—" : `${fmt(p95, 0)}ms`, detail: "实时指标", trend: [], tone: p95 != null && p95 > 300 ? "danger" : "success" },
-    { id: "tools", label: "诊断记录", value: String(diagnosisCount), detail: "AI 诊断次数", trend: [] },
-    { id: "guard", label: "拦截模式", value: "Manual", detail: "需人工确认执行", tone: "success" },
+  const kpis: KpiItem[] = scope === "inference" ? [
+    { id: "run", label: "压测场景", value: scenarios.length ? String(scenarios.length) : "—", detail: inference?.benchmark.run_id?.slice(0, 12) || "等待压测", trend: [] },
+    { id: "ttft", label: "最差 P95 TTFT", value: metric(worst?.p95_ttft_ms, "ms"), detail: worst ? `${contextLabel(worst.context_length)} / C${worst.concurrency}` : "等待证据", trend: [], tone: (worst?.p95_ttft_ms ?? 0) > 3000 ? "warning" : "success" },
+    { id: "tpot", label: "对应 P95 TPOT", value: metric(worst?.p95_tpot_ms, "ms"), detail: "decode 时延", trend: [] },
+    { id: "success", label: "最低成功率", value: minSuccess == null ? "—" : `${fmt(minSuccess * 100, 1)}%`, detail: "正确性优先门禁", trend: [], tone: minSuccess != null && minSuccess < 0.99 ? "danger" : "success" },
+    { id: "gpu", label: "显存峰值", value: gpuPeak == null ? "—" : `${fmt(gpuPeak, 1)}%`, detail: "场景采集值", trend: [], tone: (gpuPeak ?? 0) >= 95 ? "warning" : "success" },
+  ] : [
+    { id: "job", label: "训练任务", value: training?.job.status ?? "—", detail: training?.job.name ?? "暂无任务", trend: [], tone: training?.job.status === "failed" ? "danger" : "success" },
+    { id: "phase", label: "PyTorchJob", value: training?.pytorch_job?.phase ?? "—", detail: training?.pytorch_job?.available === false ? "集群暂不可达" : "实时状态", trend: [] },
+    { id: "replicas", label: "训练副本", value: training ? `${training.job.workers} × ${training.job.gpus_per_worker}` : "—", detail: "workers × GPU", trend: [] },
+    { id: "logs", label: "Pod 日志", value: training?.pod?.available ? "已采集" : "—", detail: training?.pod?.pod ?? "等待运行 Pod", trend: [], tone: training?.pod?.available ? "success" : "warning" },
+    { id: "artifact", label: "LoRA 产物", value: training?.job.output_artifact_uri ? "已归档" : "—", detail: training?.job.output_artifact_uri ?? "尚未产出", trend: [], tone: training?.job.status === "succeeded" && !training.job.output_artifact_uri ? "warning" : "success" },
   ];
+
+  const refresh = () => {
+    aiStatusQuery.refetch();
+    inferenceQuery.refetch();
+    trainingQuery.refetch();
+    incidentsQuery.refetch();
+    diagnosesQuery.refetch();
+    if (selectedDiagnosisID) diagnosisQuery.refetch();
+  };
 
   return (
     <section className="infra-page aiops-page aiops-replica">
       <PageHeader
-        title="AI Ops / 智能诊断"
-        subtitle="基于多源观测数据与知识库的智能根因分析与修复建议"
-        actions={
-          <>
-            <button className="console-refresh" disabled={busy} onClick={() => createIncidentMutation.mutate()} type="button">
-              <Plus size={14} /> 创建 Incident
-            </button>
-            <button className="console-refresh primary" disabled={busy} onClick={() => diagnoseMutation.mutate()} type="button">
-              <Sparkles size={14} /> {diagnoseMutation.isPending ? "诊断中..." : "运行诊断"}
-            </button>
-            <button className="console-refresh primary" disabled={busy} onClick={() => agentDiagnoseMutation.mutate()} type="button" title="多轮工具取证 + 推理轨迹">
-              <Bot size={14} /> {agentDiagnoseMutation.isPending ? "Agent 取证中..." : "Agent 诊断"}
-            </button>
-            <button
-              className="console-refresh"
-              type="button"
-              onClick={() => {
-                incidentsQuery.refetch();
-                diagnosesQuery.refetch();
-                metricsQuery.refetch();
-                k8sQuery.refetch();
-                configQuery.refetch();
-                deploymentsQuery.refetch();
-              }}
-            >
-              <RefreshCw size={14} /> 刷新
-            </button>
-          </>
-        }
+        title="AIOps / 智能诊断"
+        subtitle="训练任务与推理服务的多源取证、瓶颈归因和 Incident 闭环"
+        actions={<>
+          <button className="console-refresh primary" disabled={busy || !evidenceReady} onClick={() => diagnoseMutation.mutate(scope)} type="button">
+            <Play size={14} /> {diagnoseMutation.isPending ? "诊断中..." : `运行${scope === "inference" ? "推理" : "训练"}诊断`}
+          </button>
+          <button className="console-refresh" disabled={busy} onClick={refresh} type="button"><RefreshCw size={14} /> 刷新证据</button>
+        </>}
       />
 
-      <div className="aiops-process-ribbon">
-        {["发现问题", "定位对象", "分析原因", "推荐动作", "执行修复", "验证恢复"].map((label, index) => (
-          <div className={index === 2 ? "active" : undefined} key={label}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <strong>{label}</strong>
-            <small>{index === 2 ? "根因分析" : index === 0 ? "异常检测" : "修复建议"}</small>
-          </div>
-        ))}
+      <div className="aiops-scope-switch" role="tablist" aria-label="诊断范围">
+        <button aria-selected={scope === "inference"} className={scope === "inference" ? "active" : ""} onClick={() => { setScope("inference"); setSelectedDiagnosisID(""); update({ deliveryKind: "inference", trainingJobId: null, diagnosisId: null }); }} role="tab" type="button"><Zap size={15} /> 推理服务诊断</button>
+        <button aria-selected={scope === "training"} className={scope === "training" ? "active" : ""} onClick={() => { setScope("training"); setSelectedDiagnosisID(""); update({ deliveryKind: "training", benchmarkRunId: null, deploymentId: null, diagnosisId: null }); }} role="tab" type="button"><GraduationCap size={15} /> 训练任务诊断</button>
+      </div>
+
+      <div className={`aiops-llm-status ${aiStatusQuery.data?.llm_connected ? "live" : "degraded"}`}>
+        <Cpu size={15} />
+        <strong>{aiStatusQuery.data?.llm_connected ? "LLM 实时推理已连接" : "LLM 未连接，诊断将使用规则降级"}</strong>
+        <span title={aiStatusQuery.data?.llm_base_url || ""}>
+          {aiStatusQuery.data?.model || "未配置模型"} · {aiStatusQuery.data?.model_selection === "auto_probe" ? "自动探活" : aiStatusQuery.data?.effective_mode || "unknown"}
+          {aiStatusQuery.data?.available_models?.length ? ` · 可用 ${aiStatusQuery.data.available_models.join(", ")}` : ""}
+        </span>
+        {!aiStatusQuery.data?.llm_connected && (aiStatusQuery.data?.llm_error || aiStatusQuery.data?.error) ? <small>{aiStatusQuery.data.llm_error || aiStatusQuery.data.error}</small> : null}
+      </div>
+
+      <div className="aiops-question-bar">
+        <label><Search size={14} /><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`可选：补充本次${scope === "inference" ? "推理压测" : "训练任务"}的诊断问题；留空使用标准模板`} /></label>
+        <span>{scope === "inference" ? `Run ${context.benchmarkRunId?.slice(0, 12) || "latest"}` : `Job ${context.trainingJobId?.slice(0, 12) || "latest"}`}</span>
       </div>
 
       <KpiGrid className="aiops-kpi-strip" items={kpis} />
 
       <section className="infra-panel aiops-context-panel">
-        <PanelHeader title="上下文信息" action="Go 取证链路：metrics / k8s / config / deployments" />
-        <div className="aiops-context-grid">
-          {contextItems.map((item) => (
-            <div className="aiops-context-card" key={item.id}>
-              <ContextIcon id={item.id} />
-              <div>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
+        <PanelHeader title={`${scope === "inference" ? "推理" : "训练"}证据快照`} action={evidenceReady ? "真实采集 · 每 15 秒刷新" : "等待可诊断任务"} />
+        {activeEvidenceQuery.isLoading ? <Skeleton rows={2} /> : activeEvidenceQuery.isError ? (
+          <EmptyState title={scope === "training" ? "暂无训练任务证据" : "暂无已完成压测"} description={scope === "training" ? "创建并启动训练任务后，将自动采集台账、PyTorchJob、Pod 日志与 GPU 快照。" : "完成一次推理压测后即可进行专项归因。"} />
+        ) : (
+          <div className="aiops-context-grid">
+            {(scope === "inference" ? inferenceContext(inference) : trainingContext(training)).map((item) => (
+              <div className="aiops-context-card" key={item.label} title={item.value}>
+                <ContextIcon id={item.id} />
+                <div><span>{item.label}</span><strong>{item.value}</strong></div>
               </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="infra-panel aiops-incident-panel">
-        <PanelHeader title="Incident 列表" action="后端实时数据" />
-        <div className="aiops-toolbar">
-          <select className="aiops-filter" onChange={(event) => setSeverityFilter(event.target.value)} value={severityFilter}>
-            <option value="all">所有严重性</option>
-            {severityOptions.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
-          <select className="aiops-filter" onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
-            <option value="all">所有状态</option>
-            {statusOptions.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
-          <label className="aiops-search">
-            <Search size={13} />
-            <input onChange={(event) => setIncidentSearch(event.target.value)} placeholder="搜索 Incident ID / 标题 / 服务..." value={incidentSearch} />
-          </label>
-        </div>
-        <div className="aiops-incident-table">
-          <div className="aiops-incident-row header">
-            <span>ID</span>
-            <span>严重性</span>
-            <span>标题</span>
-            <span>服务</span>
-            <span>信号</span>
-            <span>置信度</span>
-            <span>状态</span>
-            <span>持续时间</span>
-            <span>操作</span>
+            ))}
           </div>
-          {incidentsQuery.isLoading ? (
-            <Skeleton rows={3} />
-          ) : incidentsQuery.isError ? (
-            <ErrorState error={incidentsQuery.error} onRetry={incidentsQuery.refetch} />
-          ) : filteredIncidents.length === 0 ? (
-            <EmptyState title="暂无 Incident" description={incidents.length ? "无匹配的筛选结果" : "点击「创建 Incident」或等待告警触发"} />
-          ) : (
-          filteredIncidents.map((incident) => (
-            <div className="aiops-incident-row" key={incident.id}>
-              <span>{incident.id}</span>
-              <StatusBadge status={incident.severity} />
-              <strong>{incident.title}</strong>
-              <span>{incident.service}</span>
-              <span>{incident.signal}</span>
-              <span>{incident.confidence}</span>
-              <StatusBadge status={incident.status} />
-              <span>{incident.duration}</span>
-              <span className="aiops-row-actions">
-                <button onClick={() => goTo("observability")} type="button" title="查看证据"><Eye size={13} /></button>
-                <button
-                  disabled={!incident.rawId || busy}
-                  onClick={() => incident.rawId && incidentTransitionMutation.mutate({ id: incident.rawId, action: "ack" })}
-                  type="button"
-                  title="确认 Incident"
-                >
-                  <CheckCircle size={13} />
-                </button>
-                <button
-                  disabled={!incident.rawId || busy}
-                  onClick={() => incident.rawId && incidentTransitionMutation.mutate({ id: incident.rawId, action: "resolve" })}
-                  type="button"
-                  title="解决 Incident"
-                >
-                  <Bot size={13} />
-                </button>
-                <button onClick={() => goTo("observability")} type="button"><MoreVertical size={13} /></button>
-              </span>
-            </div>
-          )))}
-        </div>
+        )}
       </section>
 
-      <div className="aiops-bottom-grid">
+      <div className="aiops-diagnosis-grid">
         <section className="infra-panel aiops-rca-panel">
-          <PanelHeader title="根因分析" action={latestDiagnosis ? `最新诊断 ${latestDiagnosis.id.slice(0, 8)}` : "待运行诊断"} />
-          <div className="aiops-root-cause">
-            <strong>根因结论</strong>
-            <p>{latestDiagnosis?.root_cause || "尚无诊断结论，点击「运行诊断」生成"}</p>
-          </div>
-          <div className="aiops-evidence-list">
-            <strong>关键证据</strong>
-            {evidenceList.length ? (
-              evidenceList.map((item) => <span key={item}>{item}</span>)
-            ) : (
-              <span className="aiops-evidence-empty">尚无证据，运行诊断后由 metrics / 诊断结果生成</span>
-            )}
-          </div>
-          {agentResult && agentResult.trace.length > 0 ? (
-            <div className="aiops-agent-trace">
-              <strong>Agent 推理轨迹（{agentResult.steps} 步取证 · {agentResult.mode}）</strong>
-              <ol>
-                {agentResult.trace.map((s, i) => (
-                  <li key={`${s.step}-${s.tool}-${i}`}>
-                    <em>{s.tool}</em>
-                    <span>{s.summary}</span>
-                  </li>
-                ))}
-              </ol>
+          <PanelHeader title="根因与证据链" action={diagnosis ? `诊断 ${diagnosis.id.slice(0, 8)}` : "尚未运行"} />
+          {diagnosisQuery.isLoading ? <Skeleton rows={3} /> : diagnosisQuery.isError ? <ErrorState error={diagnosisQuery.error} onRetry={diagnosisQuery.refetch} /> : diagnosis ? <>
+            <div className={`aiops-root-cause ${classification.severity === "info" ? "healthy" : ""}`}>
+              <div className="aiops-diagnosis-meta">
+                <StatusBadge status={severityLabel(classification.severity)} />
+                <span>{categoryLabel(classification.category)}</span>
+                <span>{diagnosis.confidence == null ? "置信度 —" : `置信度 ${fmt(diagnosis.confidence * 100, 0)}%`}</span>
+              </div>
+              <strong>根因结论</strong>
+              <p>{diagnosis.root_cause}</p>
+              {diagnosis.impact ? <small>影响：{diagnosis.impact}</small> : null}
+              {diagnosis.error ? <small>诊断校验：{diagnosis.error}（已使用当前证据规则结论）</small> : null}
             </div>
-          ) : null}
+            <div className="aiops-evidence-list">
+              <strong>关键证据</strong>
+              {(diagnosis.evidence ?? []).filter((item) => item.source !== "classifier").map((item, index) => (
+                <span key={`${item.label}-${index}`}><b>{item.label}</b> · {item.detail} <em>{item.source}</em></span>
+              ))}
+            </div>
+          </> : <EmptyState title="暂无诊断结论" description="选择有证据的作用域并运行专项诊断。" />}
+        </section>
+
+        <section className="infra-panel aiops-actions-panel">
+          <PanelHeader title="优化与修复建议" action="人工确认后执行" />
+          {diagnosis?.recommended_actions?.length ? <div className="aiops-action-list">
+            {diagnosis.recommended_actions.map((action, index) => <div className="aiops-action-row" key={`${action.action}-${index}`}>
+              <span>{index + 1}</span>
+              <div><strong>{action.action}</strong><small>{action.impact}</small></div>
+              <StatusBadge status={riskLabel(action.risk)} />
+            </div>)}
+          </div> : <EmptyState title="暂无建议" description="完成诊断后生成可验证的修复或控制变量实验。" />}
+          {diagnosis?.related_resources?.length ? <div className="aiops-resource-chips">
+            {diagnosis.related_resources.map((resource, index) => <span key={`${resource.type}-${resource.id}-${index}`}>{resource.type} · {resource.name || resource.id || "-"}</span>)}
+          </div> : null}
         </section>
       </div>
+
+      <section className="infra-panel aiops-incident-panel">
+        <PanelHeader title="关联 Incident" action="warning / critical 诊断自动创建或复用" />
+        <div className="aiops-toolbar">
+          <select onChange={(event) => setSeverityFilter(event.target.value)} value={severityFilter}>
+            <option value="all">所有严重性</option>
+            <option value="critical">严重</option><option value="warning">警告</option><option value="info">提示</option>
+          </select>
+          <label className="aiops-search"><Search size={13} /><input onChange={(event) => setIncidentSearch(event.target.value)} placeholder="搜索 ID、标题或证据摘要" value={incidentSearch} /></label>
+        </div>
+        {incidentsQuery.isLoading ? <Skeleton rows={3} /> : incidentsQuery.isError ? <ErrorState error={incidentsQuery.error} onRetry={incidentsQuery.refetch} /> : filteredIncidents.length ? (
+          <div className="aiops-incident-table">
+            <div className="aiops-incident-row header"><span>ID</span><span>级别</span><span>标题</span><span>证据摘要</span><span>状态</span><span>操作</span></div>
+            {filteredIncidents.map((incident) => <div className="aiops-incident-row" key={incident.id}>
+              <span>{incident.id.slice(0, 8)}</span><StatusBadge status={severityLabel(incident.severity)} /><strong>{incident.title}</strong>
+              <span title={incident.summary ?? ""}>{incident.summary || "诊断事件"}</span><StatusBadge status={statusLabel(incident.status)} />
+              <span className="aiops-row-actions">
+                <button disabled={busy || incident.status !== "open"} onClick={() => incidentTransitionMutation.mutate({ id: incident.id, action: "ack" })} title="确认 Incident" type="button"><CheckCircle size={13} /></button>
+                <button disabled={busy || incident.status === "resolved"} onClick={() => incidentTransitionMutation.mutate({ id: incident.id, action: "resolve" })} title="解决 Incident" type="button"><Activity size={13} /></button>
+              </span>
+            </div>)}
+          </div>
+        ) : <EmptyState title="暂无关联 Incident" description="专项诊断仅在发现 warning 或 critical 异常时自动创建。" />}
+      </section>
     </section>
   );
 }
 
-function buildAiOpsContext(
-  metrics: Metrics | undefined,
-  k8s: KubernetesSnapshot | undefined,
-  configItems: ConfigItem[] | undefined,
-  deployments: Deployment[] | undefined
-) {
-  const service = metrics?.service_instances?.[0];
-  const runningPods = k8s?.pods?.filter((pod) => pod.phase === "Running").length ?? metrics?.kubernetes?.pods?.filter((pod) => pod.phase === "Running").length;
-  const podTotal = k8s?.pods?.length ?? metrics?.kubernetes?.pods?.length;
-  const latestConfig = configItems?.[0];
-  const latestDeployment = deployments?.[0];
-  const gpuPeak = metrics?.gpu?.length ? Math.max(...metrics.gpu.map((gpu) => gpu.gpu_utilization_percent)) : null;
-  const requestCount = metrics?.request_count ?? 0;
-
+function inferenceContext(evidence?: InferenceEvidence["inference"]) {
+  const run = evidence?.benchmark;
+  const runtimeStatus = String(evidence?.runtime?.status ?? "stopped");
+  const vllm = run?.config?.vllm ?? {};
+  const model = String(vllm.model_id ?? vllm.model ?? evidence?.runtime?.model ?? modelIDFromEndpoint(run?.endpoint_id) ?? "未探测");
   return [
-    { id: "env", label: "环境", value: latestDeployment?.env ? `${latestDeployment.env} / Go` : "Go 控制面" },
-    { id: "ns", label: "命名空间", value: k8s?.pods?.[0]?.namespace ?? metrics?.kubernetes?.pods?.[0]?.namespace ?? "default" },
-    { id: "service", label: "受影响服务", value: service?.name ?? latestDeployment?.name ?? "llm-chat-service" },
-    { id: "replica", label: "运行 Pod", value: podTotal ? `${runningPods ?? 0} / ${podTotal} Running` : "等待 Agent" },
-    { id: "slo", label: "SLO 状态", value: metrics?.p95_latency_ms ? `P95 ${fmt(metrics.p95_latency_ms, 0)}ms` : "等待 metrics" },
-    { id: "config", label: "关联配置", value: latestConfig ? `${latestConfig.config_key} v${latestConfig.active_version}` : "等待配置项" },
-    { id: "deploy", label: "关联部署", value: latestDeployment ? `${latestDeployment.name}:${latestDeployment.version ?? "-"}` : "等待部署记录" },
-    { id: "model", label: "关联模型", value: service?.model_id ?? "qwen3-4b" },
-    { id: "impact", label: "影响请求", value: requestCount ? `${fmt(requestCount, 0)} / 10m` : "等待请求数据" },
-    { id: "resource", label: "资源占用", value: gpuPeak !== null ? `GPU ${fmt(gpuPeak, 0)}%` : "等待 GPU 指标" },
+    { id: "model", label: "推理模型", value: model },
+    { id: "run", label: "Benchmark Run", value: run?.run_id ?? "—" },
+    { id: "data", label: "客服工作负载", value: run?.workload ?? "—" },
+    { id: "runtime", label: "vLLM 运行时", value: runtimeStatus },
+    { id: "cache", label: "Prefix Cache", value: run?.prefix_caching ? "开启" : "关闭" },
+    { id: "prefill", label: "Chunked Prefill", value: run?.chunked_prefill ? "开启" : "关闭" },
+    { id: "seqs", label: "max_num_seqs", value: run?.max_num_seqs == null ? "—" : String(run.max_num_seqs) },
+    { id: "tokens", label: "Batch Token 预算", value: run?.max_num_batched_tokens == null ? "—" : String(run.max_num_batched_tokens) },
+    { id: "baseline", label: "可比 Baseline", value: evidence?.baseline?.run_id ?? "—" },
+    { id: "updated", label: "证据时间", value: formatTime(run?.updated_at) },
   ];
 }
 
-function buildEvidenceList(metrics: Metrics | undefined, diagnosis: DiagnosisListItem | undefined) {
-  const evidence: string[] = [];
-  if (diagnosis?.root_cause) evidence.push(diagnosis.root_cause);
-  if (metrics?.p95_latency_ms !== null && metrics?.p95_latency_ms !== undefined) evidence.push(`P95 延迟 ${fmt(metrics.p95_latency_ms, 0)}ms`);
-  if (metrics?.p95_ttft_ms !== null && metrics?.p95_ttft_ms !== undefined) evidence.push(`TTFT P95 ${fmt(metrics.p95_ttft_ms, 0)}ms`);
-  if (metrics?.error_rate !== null && metrics?.error_rate !== undefined) evidence.push(`错误率 ${fmt(metrics.error_rate * 100, 2)}%`);
-  if (metrics?.target_pod_stats?.length) {
-    const slowest = [...metrics.target_pod_stats].sort((a, b) => (b.p95_latency_ms ?? 0) - (a.p95_latency_ms ?? 0))[0];
-    evidence.push(`最慢目标 ${slowest.name} · P95 ${fmt(slowest.p95_latency_ms ?? 0, 0)}ms`);
+function modelIDFromEndpoint(endpoint?: string) {
+  return endpoint?.replace(/-vllm$/, "") || "";
+}
+
+function trainingContext(evidence?: TrainingEvidence["training"]) {
+  const job = evidence?.job;
+  return [
+    { id: "model", label: "基础模型", value: job?.base_model ?? "Qwen3.5-4B" },
+    { id: "job", label: "训练任务", value: job?.name ?? "—" },
+    { id: "data", label: "客服数据集", value: job?.dataset_uri ?? "DianJin-CSC-Data" },
+    { id: "namespace", label: "K8s Namespace", value: job?.namespace ?? "—" },
+    { id: "phase", label: "实时 Phase", value: evidence?.pytorch_job?.phase ?? job?.status ?? "—" },
+    { id: "pod", label: "训练 Pod", value: evidence?.pod?.pod ?? "—" },
+    { id: "logs", label: "日志采集", value: evidence?.pod?.available ? "可用" : evidence?.pod?.error ?? "等待 Pod" },
+    { id: "replicas", label: "分布式配置", value: job ? `${job.workers} workers / ${job.gpus_per_worker} GPU` : "—" },
+    { id: "artifact", label: "Adapter 产物", value: job?.output_artifact_uri ?? "尚未产出" },
+    { id: "updated", label: "证据时间", value: formatTime(job?.updated_at) },
+  ];
+}
+
+function parseClassification(evidence?: EvidenceItem[]) {
+  const detail = evidence?.find((item) => item.source === "classifier")?.detail ?? "";
+  const category = /category=([^,]+)/.exec(detail)?.[1] ?? "general";
+  const severity = /severity=([^,]+)/.exec(detail)?.[1] ?? "info";
+  return { category, severity };
+}
+
+function extractEmbeddedRca(raw?: string | null): Partial<Diagnosis> & { classification: { category: string; severity: string } } | null {
+  const text = raw?.trim() ?? "";
+  if (!text.startsWith("{") || !text.includes('"root_cause"')) return null;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (typeof parsed.root_cause !== "string") return null;
+    return {
+      root_cause: parsed.root_cause,
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : undefined,
+      impact: typeof parsed.impact === "string" ? parsed.impact : undefined,
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence as EvidenceItem[] : undefined,
+      recommended_actions: Array.isArray(parsed.recommended_actions) ? parsed.recommended_actions as RecommendedAction[] : undefined,
+      related_resources: Array.isArray(parsed.related_resources) ? parsed.related_resources as RelatedResource[] : undefined,
+      classification: { category: stringField(parsed.category) || "general", severity: stringField(parsed.severity) || "info" },
+    };
+  } catch {
+    const rootCause = jsonStringField(text, "root_cause");
+    if (!rootCause) return null;
+    return {
+      root_cause: rootCause,
+      confidence: numberField(text, "confidence"),
+      impact: jsonStringField(text, "impact") || "LLM 返回的结构化内容不完整；请重新运行诊断以补齐证据与建议。",
+      classification: { category: jsonStringField(text, "category") || "general", severity: jsonStringField(text, "severity") || "info" },
+    };
   }
-  return evidence.slice(0, 5);
 }
 
-function deriveIncidents(items: Incident[] | undefined): AiOpsIncidentRow[] {
-  if (!items?.length) return [];
-  return items.slice(0, 50).map((item) => ({
-    id: item.id.slice(0, 8),
-    rawId: item.id,
-    severity: severityLabel(item.severity),
-    title: item.title,
-    service: item.summary?.split(" ")[0] || "llm-chat-service",
-    signal: item.summary || "AI 诊断事件",
-    confidence: "实时",
-    status: statusLabel(item.status),
-    duration: item.resolved_at ? "已恢复" : "进行中",
-  }));
+function stringField(value: unknown): string { return typeof value === "string" ? value : ""; }
+function numberField(text: string, name: string): number | undefined {
+  const value = new RegExp(`"${name}"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)`).exec(text)?.[1];
+  return value == null ? undefined : Number(value);
+}
+function jsonStringField(text: string, name: string): string {
+  const match = new RegExp(`"${name}"\\s*:\\s*("(?:\\\\.|[^"\\\\])*")`).exec(text)?.[1];
+  if (!match) return "";
+  try { return JSON.parse(match) as string; } catch { return ""; }
 }
 
-function describeAIOpsError(error: unknown) {
-  if (error instanceof Error) return error.message;
-  return "unknown error";
+function metric(value?: number, unit = "") { return value == null ? "—" : `${fmt(value, 1)}${unit}`; }
+function contextLabel(value?: number) { return value ? `${fmt(value / 1024, 0)}K` : "—"; }
+function formatTime(value?: string) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—"; }
+function describeError(error: unknown) { return error instanceof Error ? error.message : "unknown error"; }
+function severityLabel(value: string) { return value === "critical" ? "严重" : value === "warning" ? "警告" : "提示"; }
+function statusLabel(value: string) { return value === "resolved" ? "已解决" : value === "acknowledged" ? "处理中" : "待确认"; }
+function riskLabel(value: string) { return value === "high" ? "高风险" : value === "medium" ? "中风险" : "低风险"; }
+function categoryLabel(value: string) {
+  const labels: Record<string, string> = {
+    request_failure: "请求失败", quality_regression: "输出质量回归", scheduler_saturation: "调度排队",
+    memory_pressure: "显存压力", decode_bottleneck: "Decode 瓶颈", prefill_bottleneck: "Prefill 瓶颈",
+    training_oom: "训练 OOM", distributed_failure: "分布式通信", data_failure: "训练数据",
+    artifact_failure: "产物归档", training_in_progress: "训练进行中", inference_healthy: "推理正常",
+    training_healthy: "训练正常", general: "通用诊断",
+  };
+  return labels[value] ?? value;
 }
-
-function severityLabel(value: string) {
-  const lower = value.toLowerCase();
-  if (lower.includes("critical") || lower.includes("severe")) return "严重";
-  if (lower.includes("warn")) return "警告";
-  return "提示";
-}
-
-function statusLabel(value: string) {
-  const lower = value.toLowerCase();
-  if (lower.includes("resolved")) return "诊断完成";
-  if (lower.includes("ack")) return "处理中";
-  return "等待确认";
-}
-
 function ContextIcon({ id }: { id: string }) {
-  const Icon = id === "env" ? Server
-    : id === "ns" ? ShieldCheck
-      : id === "service" || id === "replica" ? Bot
-        : id === "slo" ? Sparkles
-          : id === "config" ? FileText
-            : id === "deploy" ? GitBranch
-              : id === "model" ? Database
-                : id === "impact" ? Users
-                  : ShieldCheck;
+  const Icon = id === "model" || id === "data" ? Database
+    : id === "runtime" || id === "pod" ? Server
+      : id === "logs" ? SquareTerminal
+        : id === "run" || id === "job" ? FileText
+          : id === "phase" ? Activity
+            : id === "cache" || id === "prefill" ? Zap
+              : id === "seqs" || id === "tokens" || id === "replicas" ? Cpu
+                : id === "artifact" ? CheckCircle
+                  : id === "baseline" ? Gauge
+                    : AlertTriangle;
   return <Icon size={16} />;
 }

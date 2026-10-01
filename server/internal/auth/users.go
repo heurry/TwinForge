@@ -10,6 +10,7 @@ import (
 type Credential struct {
 	Password string
 	Role     string
+	TenantID string
 }
 
 // ParseUsers 解析 AUTH_USERS（"user:pass:role,user2:pass2:role2"）；空则给默认演示三件套。
@@ -18,15 +19,19 @@ func ParseUsers(raw string) map[string]Credential {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return map[string]Credential{
-			"admin":    {Password: "admin", Role: RoleAdmin},
-			"operator": {Password: "operator", Role: RoleOperator},
-			"viewer":   {Password: "viewer", Role: RoleViewer},
+			"admin":    {Password: "admin", Role: RoleAdmin, TenantID: "demo"},
+			"operator": {Password: "operator", Role: RoleOperator, TenantID: "demo"},
+			"viewer":   {Password: "viewer", Role: RoleViewer, TenantID: "demo"},
 		}
 	}
 	for _, item := range strings.Split(raw, ",") {
-		p := strings.SplitN(strings.TrimSpace(item), ":", 3)
-		if len(p) == 3 && p[0] != "" {
-			out[p[0]] = Credential{Password: p[1], Role: normalizeRole(p[2])}
+		p := strings.SplitN(strings.TrimSpace(item), ":", 4)
+		if len(p) >= 3 && p[0] != "" {
+			tenantID := "demo"
+			if len(p) == 4 && strings.TrimSpace(p[3]) != "" {
+				tenantID = strings.TrimSpace(p[3])
+			}
+			out[p[0]] = Credential{Password: p[1], Role: normalizeRole(p[2]), TenantID: tenantID}
 		}
 	}
 	return out
@@ -41,5 +46,5 @@ func Authenticate(dir map[string]Credential, username, password string) (*User, 
 	if subtle.ConstantTimeCompare([]byte(c.Password), []byte(password)) != 1 {
 		return nil, false
 	}
-	return &User{Subject: username, Role: c.Role}, true
+	return &User{Subject: username, Role: c.Role, TenantID: c.TenantID}, true
 }

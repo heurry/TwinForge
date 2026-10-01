@@ -12,3 +12,11 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+
+  - job_name: agent-api
+    static_configs:
+      - targets: ["agent-api:8180"]
+
+  - job_name: agent-worker
+    static_configs:
+      - targets: ["agent-worker:8181"]

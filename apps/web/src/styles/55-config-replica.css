@@ -209,7 +209,7 @@
   border-top: 1px solid #edf2f7;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(132px, 1.25fr) minmax(82px, 0.78fr) 68px 82px 78px minmax(112px, 0.9fr) 60px 108px;
+  grid-template-columns: minmax(160px, 1.35fr) minmax(82px, 0.78fr) 68px minmax(100px, 0.8fr) 78px minmax(112px, 0.9fr) 60px 104px;
   min-height: 51px;
   padding: 7px 16px;
 }
@@ -246,6 +246,37 @@
 }
 
 .config-name-cell strong {
+  color: #2563eb;
+}
+
+.config-name-line {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.config-name-line > strong {
+  flex: 0 1 auto;
+}
+
+.config-name-line .config-inline-copy {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #64748b;
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 20px;
+  justify-content: center;
+  padding: 0;
+  width: 20px;
+}
+
+.config-name-line .config-inline-copy:hover {
+  background: #eff6ff;
   color: #2563eb;
 }
 
@@ -293,7 +324,7 @@
 
 .config-row-actions {
   display: inline-flex;
-  gap: 4px;
+  gap: 6px;
 }
 
 .config-row-actions button {
@@ -307,6 +338,22 @@
   height: 24px;
   justify-content: center;
   width: 24px;
+}
+
+.config-row-actions .config-row-action {
+  font-size: 10px;
+  font-weight: 700;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  white-space: nowrap;
+  width: auto;
+}
+
+.config-row-actions .config-row-action.primary {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
 }
 
 .config-row-actions button:hover {
@@ -428,6 +475,386 @@
   padding: 5px 8px;
 }
 
+/* 新建配置项：把“配置什么、给谁用、怎样生效”放进同一条创建链路。 */
+.infra-drawer.config-create-drawer {
+  width: 620px;
+}
+
+.infra-drawer.config-version-drawer {
+  width: 560px;
+}
+
+.config-create-drawer .infra-drawer-header {
+  padding: 18px 20px;
+}
+
+.config-create-drawer .infra-drawer-header strong {
+  font-size: 16px;
+}
+
+.config-create-drawer .infra-drawer-body {
+  gap: 0;
+  padding: 16px 20px 24px;
+}
+
+.config-create-drawer .infra-drawer-footer {
+  background: #ffffff;
+  padding: 12px 20px;
+}
+
+.config-drawer-cancel {
+  background: #ffffff;
+  border: 1px solid #d8e0eb;
+  border-radius: 7px;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 16px;
+}
+
+.config-create-explainer {
+  align-items: flex-start;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  color: #2563eb;
+  display: flex;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.config-create-explainer > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.config-create-explainer strong {
+  color: #1e3a8a;
+  display: block;
+  font-size: 12px;
+}
+
+.config-create-explainer p {
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 3px 0 0;
+}
+
+.drawer-section.config-create-section {
+  gap: 12px;
+  padding: 18px 0;
+}
+
+.config-create-section-title {
+  align-items: flex-start;
+  display: flex;
+  gap: 9px;
+}
+
+.config-create-section-title > span {
+  align-items: center;
+  background: #2563eb;
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  height: 21px;
+  justify-content: center;
+  width: 21px;
+}
+
+.config-create-section-title h4 {
+  color: #0f172a;
+  font-size: 13px;
+  margin: 1px 0 0;
+}
+
+.config-create-section-title p {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.4;
+  margin: 3px 0 0;
+}
+
+.config-purpose-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.config-purpose-card {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d8e0eb;
+  border-radius: 8px;
+  color: #334155;
+  cursor: pointer;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 30px minmax(0, 1fr) 16px;
+  min-height: 58px;
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.config-purpose-card:hover {
+  background: #f8fbff;
+  border-color: #93c5fd;
+}
+
+.config-purpose-card.active {
+  background: #eff6ff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+
+.config-purpose-card > span {
+  align-items: center;
+  background: #f1f5f9;
+  border-radius: 7px;
+  color: #475569;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+.config-purpose-card.active > span {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.config-purpose-card > div {
+  min-width: 0;
+}
+
+.config-purpose-card strong,
+.config-purpose-card small {
+  display: block;
+}
+
+.config-purpose-card strong {
+  color: #0f172a;
+  font-size: 12px;
+}
+
+.config-purpose-card small {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.config-purpose-card > svg {
+  color: #2563eb;
+}
+
+.config-form-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.config-form-field {
+  display: grid;
+  gap: 5px;
+}
+
+.config-form-field > span,
+.config-type-preview > span {
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.config-form-field > span em {
+  color: #ef4444;
+  font-size: 9px;
+  font-style: normal;
+  margin-left: 3px;
+}
+
+.config-form-field > small {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.config-create-drawer .drawer-input,
+.config-create-drawer .drawer-textarea {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+  margin: 0;
+}
+
+.config-create-drawer select.drawer-input {
+  cursor: pointer;
+}
+
+.config-type-preview {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+}
+
+.config-type-preview strong {
+  color: #2563eb;
+  font-size: 12px;
+}
+
+.config-key-input,
+.config-editor-heading strong,
+.config-create-summary > span:last-of-type {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.config-reset-key,
+.config-template-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: #2563eb;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  gap: 4px;
+  justify-content: flex-start;
+  padding: 0;
+  width: max-content;
+}
+
+.config-content-title > div {
+  min-width: 0;
+}
+
+.config-content-title .config-template-button {
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 5px 8px;
+}
+
+.config-editor-heading {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: #64748b;
+  display: flex;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.config-editor-heading strong {
+  color: #334155;
+  font-size: 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-editor-heading span {
+  background: #e2e8f0;
+  border-radius: 4px;
+  color: #475569;
+  font-size: 9px;
+  font-weight: 800;
+  margin-left: auto;
+  padding: 3px 5px;
+}
+
+.config-create-drawer .config-content-editor {
+  border-radius: 0 0 8px 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  min-height: 230px;
+  tab-size: 2;
+}
+
+.config-validation,
+.config-submit-hint {
+  align-items: flex-start;
+  display: flex;
+  font-size: 10px;
+  gap: 5px;
+  line-height: 1.4;
+}
+
+.config-validation.success {
+  color: #15803d;
+}
+
+.config-validation.error,
+.config-submit-hint {
+  color: #dc2626;
+}
+
+.config-validation > svg,
+.config-submit-hint > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.config-create-summary {
+  background: #f8fafc;
+  border: 1px solid #d8e0eb;
+  border-radius: 9px;
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+}
+
+.config-create-summary > strong {
+  color: #0f172a;
+  font-size: 11px;
+}
+
+.config-create-summary > span {
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.config-create-summary p {
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 3px 0 0;
+}
+
+.config-submit-hint {
+  padding-top: 8px;
+}
+
+.config-version-publish-note {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0 0 2px;
+}
+
+.config-version-editor {
+  font-size: 11px;
+  line-height: 1.55;
+  min-height: 250px;
+}
+
 @media (max-width: 1500px) {
   .config-process-ribbon {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -447,5 +874,17 @@
 
   .config-bottom-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .config-purpose-grid,
+  .config-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .infra-drawer.config-create-drawer {
+    max-width: 100vw;
+    width: 100vw;
   }
 }

@@ -62,7 +62,7 @@ export function PolicyDrawer({ routing, editing, onClose }: { routing: Routing; 
   };
 
   return (
-    <Drawer open title={isEdit ? `编辑策略 ${editing!.name}` : "新建路由策略"} subtitle="模型路由 / A-B / 影子流量" onClose={onClose}>
+    <Drawer open title={isEdit ? `编辑策略 ${editing!.name}` : "新建路由策略"} subtitle="模型版本与服务实例 / A-B 灰度 / 影子流量" onClose={onClose}>
       <datalist id="routing-endpoints">
         {endpoints.map((e) => <option key={e} value={e} />)}
       </datalist>
@@ -77,21 +77,21 @@ export function PolicyDrawer({ routing, editing, onClose }: { routing: Routing; 
 
       <div className="drawer-section">
         <div className="routing-section-head">
-          <strong>加权候选（A/B 灰度）</strong>
+          <strong>候选版本 / 服务实例（A/B 与灰度）</strong>
           <span className={weightTotal > 0 ? "cell-subtle" : "routing-warn"}>权重合计 {weightTotal}</span>
         </div>
         {variants.map((v, i) => (
           <div className="routing-variant-row" key={i}>
-            <input className="drawer-input" placeholder="标签" value={v.label} onChange={(e) => setVariant(i, "label", e.target.value)} />
-            <input className="drawer-input" list="routing-endpoints" placeholder="endpoint" value={v.endpoint} onChange={(e) => setVariant(i, "endpoint", e.target.value)} />
-            <input className="drawer-input" placeholder="model（可空，覆盖版本）" value={v.model} onChange={(e) => setVariant(i, "model", e.target.value)} />
+            <input className="drawer-input" placeholder="候选标识（stable/canary）" value={v.label} onChange={(e) => setVariant(i, "label", e.target.value)} />
+            <input className="drawer-input" list="routing-endpoints" placeholder="服务实例 endpoint" value={v.endpoint} onChange={(e) => setVariant(i, "endpoint", e.target.value)} />
+            <input className="drawer-input" placeholder="模型版本（可选）" value={v.model} onChange={(e) => setVariant(i, "model", e.target.value)} />
             <input className="drawer-input routing-weight" type="number" min={0} placeholder="权重" value={v.weight} onChange={(e) => setVariant(i, "weight", e.target.value)} />
             <button className="link-btn danger" type="button" title="移除候选" disabled={variants.length <= 1} onClick={() => removeVariant(i)}>
               <Trash2 size={13} />
             </button>
           </div>
         ))}
-        <button className="link-btn" type="button" onClick={addVariant}><Plus size={13} /> 添加候选</button>
+        <button className="link-btn" type="button" onClick={addVariant}><Plus size={13} /> 添加候选版本 / 实例</button>
       </div>
 
       <div className="drawer-section">

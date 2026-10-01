@@ -524,6 +524,45 @@
   padding: 1px 5px;
 }
 
+.md-link {
+  color: #245dcc;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: #adc3ef;
+  text-underline-offset: 2px;
+}
+
+.md-link:hover {
+  color: #17489f;
+  text-decoration-color: currentColor;
+}
+
+.md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.md-table {
+  border-collapse: collapse;
+  font-size: 11.5px;
+  min-width: 360px;
+  width: 100%;
+}
+
+.md-table th,
+.md-table td {
+  border: 1px solid #dfe4eb;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  background: #f5f7fa;
+  color: #343b46;
+  font-weight: 700;
+}
+
 .md-code {
   background: #0f172a;
   border-radius: 6px;

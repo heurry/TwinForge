@@ -1,0 +1,13 @@
+# Offline/local fallback: reuse the dependency-populated test builder and the
+# current distroless runtime image. The normal reproducible build remains the
+# default Dockerfile.
+ARG BUILD_IMAGE=cip-server-test:latest
+ARG RUNTIME_IMAGE=cloudnative-infra-platform-go-server:latest
+FROM ${BUILD_IMAGE} AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
+
+FROM ${RUNTIME_IMAGE}
+COPY --from=build /out/server /server
+ENTRYPOINT ["/server"]

@@ -6,9 +6,9 @@ import type { ModelRegistry } from "../../lib/useModelRegistry";
 
 export function RegisterVersionDrawer({ registry, onClose }: { registry: ModelRegistry; onClose: () => void }) {
   const [form, setForm] = useState({
-    model_id: "",
-    version: "v1",
-    base_model: "Qwen3-4B",
+    model_id: "qwen35-4b-customer",
+    version: "lora-v1",
+    base_model: "/mnt/nvme-data/LLM/llm_train_platform_miniv2/model/Qwen3.5-4B",
     lora_adapter: "",
     parent_version: "",
     tags: "",
@@ -38,9 +38,9 @@ export function RegisterVersionDrawer({ registry, onClose }: { registry: ModelRe
   return (
     <Drawer open title="注册模型版本" subtitle="独立模型注册中心" onClose={onClose}>
       <div className="drawer-section">
-        <input className="drawer-input" placeholder="model_id（如 qwen3-4b-customer）" value={form.model_id} onChange={set("model_id")} />
+        <input className="drawer-input" placeholder="model_id（如 qwen35-4b-customer）" value={form.model_id} onChange={set("model_id")} />
         <input className="drawer-input" placeholder="版本（如 v1 / v2）" value={form.version} onChange={set("version")} />
-        <input className="drawer-input" placeholder="基座 base_model（如 Qwen3-4B）" value={form.base_model} onChange={set("base_model")} />
+        <input className="drawer-input" placeholder="基座模型路径" value={form.base_model} onChange={set("base_model")} />
         <input className="drawer-input" placeholder="LoRA 适配器（可空）" value={form.lora_adapter} onChange={set("lora_adapter")} />
         <input className="drawer-input" placeholder="父版本 parent_version（血缘，可空）" value={form.parent_version} onChange={set("parent_version")} />
         <input className="drawer-input" placeholder="标签（逗号分隔，可空）" value={form.tags} onChange={set("tags")} />

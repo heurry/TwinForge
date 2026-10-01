@@ -54,6 +54,15 @@ var defaultGraph *ServiceGraph
 // Graph 返回调用图聚合器（Init 前为 nil）。
 func Graph() *ServiceGraph { return defaultGraph }
 
+// RecordServiceEdge lets data-plane routers add their resolved logical edge
+// (policy/endpoint -> concrete instance), which cannot be inferred from generic
+// HTTP span host attributes alone.
+func RecordServiceEdge(source, sourceKind, target, targetKind string, isErr bool) {
+	if defaultGraph != nil {
+		defaultGraph.record(source, sourceKind, target, targetKind, time.Now(), isErr)
+	}
+}
+
 // Init 设置全局 propagator + TracerProvider。TracerProvider 始终安装（含 C3 调用图 SpanProcessor，
 // 故调用图不依赖 OTLP 导出）；仅当配置了 OTLP endpoint 时额外挂 OTLP/HTTP 批量导出。
 // 返回 shutdown（flush 在途 span）；OTLP 构建失败时降级为「仅本地调用图」，绝不阻塞启动。

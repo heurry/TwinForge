@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/heurry/cloudnative-infra-platform/server/internal/db/sqlcgen"
@@ -47,6 +48,13 @@ func (s *Store) CreateConfigItem(ctx context.Context, env, namespace, configKey,
 	}); err != nil {
 		return "", err
 	}
+	meta, _ := json.Marshal(map[string]any{"env": env, "namespace": namespace, "version": 1})
+	if err := q.InsertAuditEvent(ctx, sqlcgen.InsertAuditEventParams{
+		ActorID: ptr(operator), ActorRole: ptr("operator"), Action: "config.create",
+		ResourceType: ptr("config_item"), ResourceID: ptr(configKey), Metadata: meta,
+	}); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
@@ -86,6 +94,13 @@ func (s *Store) PublishConfigVersion(ctx context.Context, id, content, reason, o
 	if err != nil {
 		return 0, "", err
 	}
+	meta, _ := json.Marshal(map[string]any{"version": next, "reason": reason})
+	if err := q.InsertAuditEvent(ctx, sqlcgen.InsertAuditEventParams{
+		ActorID: ptr(operator), ActorRole: ptr("operator"), Action: "config.publish",
+		ResourceType: ptr("config_item"), ResourceID: ptr(configKey), Metadata: meta,
+	}); err != nil {
+		return 0, "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, "", err
 	}
@@ -122,6 +137,13 @@ func (s *Store) RollbackConfigVersion(ctx context.Context, id string, target int
 	}
 	configKey, err := q.GetConfigKey(ctx, id)
 	if err != nil {
+		return "", err
+	}
+	meta, _ := json.Marshal(map[string]any{"rolled_back_to": target})
+	if err := q.InsertAuditEvent(ctx, sqlcgen.InsertAuditEventParams{
+		ActorID: ptr(operator), ActorRole: ptr("operator"), Action: "config.rollback",
+		ResourceType: ptr("config_item"), ResourceID: ptr(configKey), Metadata: meta,
+	}); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {

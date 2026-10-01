@@ -20,16 +20,26 @@ import (
 )
 
 type agentConfig struct {
-	port       string
-	k8sEnabled bool
-	kubeconfig string
+	port                    string
+	k8sEnabled              bool
+	kubeconfig              string
+	inferenceControlEnabled bool
+	inferenceImage          string
+	inferenceModelPath      string
+	inferenceCachePath      string
+	inferenceContainerName  string
 }
 
 func loadConfig() agentConfig {
 	return agentConfig{
-		port:       envOr("AGENT_PORT", "8090"),
-		k8sEnabled: envOr("AGENT_K8S_ENABLED", "false") == "true",
-		kubeconfig: os.Getenv("KUBECONFIG"),
+		port:                    envOr("AGENT_PORT", "8090"),
+		k8sEnabled:              envOr("AGENT_K8S_ENABLED", "false") == "true",
+		kubeconfig:              os.Getenv("KUBECONFIG"),
+		inferenceControlEnabled: envOr("INFERENCE_CONTROL_ENABLED", "false") == "true",
+		inferenceImage:          envOr("INFERENCE_VLLM_IMAGE", "local/vllm-openai:qwen35-v0.19.1"),
+		inferenceModelPath:      envOr("INFERENCE_MODEL_PATH", "/mnt/nvme-data/models/LLM_model/Qwen3.6-27B-FP8"),
+		inferenceCachePath:      envOr("INFERENCE_CACHE_PATH", "/mnt/nvme-data/LLM/llm_train_platform_miniv2/.cache/vllm/managed"),
+		inferenceContainerName:  envOr("INFERENCE_CONTAINER_NAME", "twinforge-vllm-managed"),
 	}
 }
 
@@ -88,6 +98,7 @@ type agent struct {
 	collector *kubeCollector
 	hostc     *hostCollector
 	gpuc      *gpuCollector
+	inference *inferenceRuntime
 	initErr   string
 }
 
@@ -111,6 +122,15 @@ func main() {
 	a.hostc.start(2 * time.Second)
 	a.gpuc = newGPUCollector()
 	a.gpuc.start(5 * time.Second)
+	if cfg.inferenceControlEnabled {
+		runtime, err := newInferenceRuntime(cfg)
+		if err != nil {
+			log.Printf("inference runtime init failed (degraded): %v", err)
+		} else {
+			a.inference = runtime
+			log.Printf("inference runtime control initialized")
+		}
+	}
 
 	mux := http.NewServeMux()
 
@@ -159,6 +179,7 @@ func main() {
 		gpus, ok, errText := a.gpuc.snapshot()
 		writeJSON(w, http.StatusOK, map[string]any{"available": ok, "gpu": gpus, "error": errText})
 	})
+	a.registerInferenceHandlers(mux)
 
 	addr := ":" + cfg.port
 	log.Printf("infra-agent listening on %s (k8s_enabled=%v)", addr, cfg.k8sEnabled)

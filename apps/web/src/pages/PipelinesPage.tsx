@@ -15,17 +15,18 @@ import {
 import { Donut, KpiGrid, PageHeader, PanelHeader, StatusBadge } from "../components/common/PlatformPrimitives";
 import { describeError, EmptyState, ErrorState, Skeleton } from "../components/common/FeedbackStates";
 import { Drawer } from "../components/common/Drawer";
-import { pipelineSnapshot, type PipelineConsoleRow } from "../data/platformSnapshots";
 import { api } from "../lib/api";
 import { compactMeta, fmt, relativeTime, shortTime } from "../lib/format";
 import { cn } from "../lib/utils";
 import { useGoToPage } from "../lib/useGoToPage";
-import type { Deployment, DeploymentMeta } from "../types/ops";
+import type { Deployment, DeploymentMeta, PipelineConsoleRow } from "../types/ops";
 import type { KpiItem } from "../types/ui";
 
 const RUNNING = "running";
+type CIRun = { id: number; name: string; display_title: string; status: string; conclusion: string | null; html_url: string; head_branch: string; head_sha?: string; created_at: string };
+type CIRunsResponse = { configured: boolean; provider: string; repository?: string; workflow?: string; default_ref?: string; message?: string; runs: CIRun[] };
 
-export function PipelinesPage() {
+export function PipelinesPage({ embedded = false }: { embedded?: boolean }) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -39,6 +40,19 @@ export function PipelinesPage() {
     queryKey: ["deployments"],
     queryFn: () => api<{ deployments: Deployment[] }>("/api/deployments"),
     refetchInterval: 8000
+  });
+  const ciQuery = useQuery({
+    queryKey: ["ci", "runs"],
+    queryFn: () => api<CIRunsResponse>("/api/ci/runs?limit=8"),
+    refetchInterval: 15000
+  });
+  const ciMutation = useMutation({
+    mutationFn: () => api("/api/ci/runs", { method: "POST", body: JSON.stringify({ ref: ciQuery.data?.default_ref || "main", operator: "frontend" }) }),
+    onSuccess: () => {
+      toast.success(`${ciProviderLabel(ciQuery.data?.provider)} 流水线已触发`);
+      setTimeout(() => ciQuery.refetch(), 2000);
+    },
+    onError: (e) => toast.error(`CI 触发失败：${describeError(e)}`)
   });
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["deployments"] });
@@ -89,26 +103,14 @@ export function PipelinesPage() {
   const pageRows = filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
-    <section className="infra-page pipelines-page pipeline-replica">
-      <PageHeader
-        title="发布流水线"
-        subtitle="自动化构建、测试、部署与回滚，保障发布质量与安全"
+    <section className={embedded ? "pipelines-page pipeline-replica release-center-embedded" : "infra-page pipelines-page pipeline-replica"}>
+      {!embedded ? <PageHeader
+        title="CI/CD 流水线"
+        subtitle="通用微服务的源码构建、测试、镜像制品和 Helm 校验；主入口已合并到发布中心"
         actions={
-          <button className="console-refresh primary" onClick={() => setCreating(true)} type="button">
-            <Plus size={14} /> 新建流水线
-          </button>
+          <button className="console-refresh primary" onClick={() => setCreating(true)} type="button"><Plus size={14} /> 新建服务流水线</button>
         }
-      />
-
-      <div className="pipeline-process-ribbon">
-        {pipelineSnapshot.process.map((step, index) => (
-          <div className={cn("pipeline-process-step", index === 4 && "active")} key={step.title}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <strong>{step.title}</strong>
-            <small>{step.detail}</small>
-          </div>
-        ))}
-      </div>
+      /> : null}
 
       <KpiGrid className="pipeline-kpi-strip" items={kpis} />
 
@@ -187,6 +189,27 @@ export function PipelinesPage() {
 
         <aside className="pipeline-side-stack">
           <section className="infra-panel">
+            <PanelHeader title={`CI / ${ciProviderLabel(ciQuery.data?.provider)}`} action={ciQuery.data?.repository || "待配置"} />
+            {ciQuery.isLoading ? <Skeleton rows={3} /> : ciQuery.isError ? <ErrorState error={ciQuery.error} onRetry={ciQuery.refetch} /> : !ciQuery.data?.configured ? (
+              <>
+                <EmptyState title="CI 连接未配置" description={ciQuery.data?.message || "配置 GitLab CI 连接后可从控制台触发并查看构建、测试结果。"} />
+                <p className="pipeline-ci-scope">当前仓库：{ciQuery.data?.repository || "未设置"} · 分支：{ciQuery.data?.default_ref || "main"}<br />流水线定义在仓库的 <code>.gitlab-ci.yml</code>：执行 Go/Python/前端测试、sqlc 校验、Helm lint，并在主分支构建并推送 4 个容器镜像。它不负责本机 vLLM 模型发布；模型发布仍由“模型服务发布”完成。</p>
+              </>
+            ) : <>
+              <button className="infra-action-btn" disabled={ciMutation.isPending} onClick={() => ciMutation.mutate()} type="button">
+                <CheckCircle size={14} /> {ciMutation.isPending ? "触发中..." : `运行 ${ciQuery.data.default_ref || "main"} CI`}
+              </button>
+              <div className="pipeline-ci-list">
+                {ciQuery.data.runs.length ? ciQuery.data.runs.map((run) => <a href={run.html_url} key={run.id} rel="noreferrer" target="_blank">
+                  <i className={cn(run.conclusion === "success" ? "success" : run.status === "in_progress" || run.status === "queued" ? "warning" : "danger")} />
+                  <span><strong>{run.display_title || run.name}</strong><small>{run.head_branch}{run.head_sha ? ` · ${run.head_sha.slice(0, 8)}` : ""} · {relativeTime(run.created_at)}</small></span>
+                  <StatusBadge status={run.conclusion || run.status} />
+                </a>) : <EmptyState title="暂无 CI 运行" />}
+              </div>
+              <p className="pipeline-ci-scope">GitLab CI 只负责执行仓库 <code>.gitlab-ci.yml</code>。实际部署内容由该文件的 job 决定；本平台的模型验收、vLLM 启停和发布门禁不由 CI 代替。</p>
+            </>}
+          </section>
+          <section className="infra-panel">
             <PanelHeader title="环境分布" action={`${envDist.total} 条`} />
             {envDist.items.length === 0 ? (
               <EmptyState title="暂无部署" />
@@ -211,6 +234,10 @@ export function PipelinesPage() {
       {creating ? <TriggerDeployDrawer onClose={() => setCreating(false)} /> : null}
     </section>
   );
+}
+
+function ciProviderLabel(provider?: string) {
+  return provider === "github_actions" || provider === "github" ? "GitHub Actions" : "GitLab CI";
 }
 
 function PipelineTableRow({
@@ -422,8 +449,8 @@ function derivePipelineRows(deployments: Deployment[] | undefined): PipelineCons
       version,
       commit: compactMeta([item.metadata.branch, item.metadata.gate]) || "-",
       status,
-      stage: normalized === RUNNING ? "部署中" : normalized === "failed" ? "测试失败" : "已完成",
-      stageMeta: normalized === RUNNING ? "Rolling Update" : normalized === "failed" ? "Test Failed" : "Deployed",
+      stage: normalized === RUNNING ? "部署中" : normalized === "failed" ? "部署失败" : "已完成",
+      stageMeta: normalized === RUNNING ? "Rolling Update" : normalized === "failed" ? "Deploy Failed" : "Deployed",
       trigger: item.metadata.owner ?? "system",
       startedAt: item.started_at ? shortTime(item.started_at) : "-",
       duration: item.finished_at && item.started_at ? relativeTime(item.started_at) : "进行中",

@@ -2,6 +2,9 @@ import type { ReactNode } from "react";
 
 export type DisplayTone = "success" | "warning" | "danger";
 
+// 迷你趋势 / 拓扑节点色调（含 info；曾定义在 data/platformSnapshots）。
+export type SparkTone = "info" | "success" | "warning" | "danger";
+
 export type CardTone = "success" | "warning" | "danger" | "ai" | "executing";
 
 export type KpiItem = {

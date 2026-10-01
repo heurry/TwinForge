@@ -6,9 +6,11 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/heurry/cloudnative-infra-platform/server/internal/obs"
 )
 
 // E3 数据面：POST /api/routing/{policy}/v1/chat/completions。
@@ -74,6 +76,7 @@ type upstreamResult struct {
 }
 
 func (a *API) routedChatCompletions(w http.ResponseWriter, r *http.Request) {
+	totalStart := time.Now()
 	policyName := chi.URLParam(r, "policy")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 	if err != nil {
@@ -105,10 +108,28 @@ func (a *API) routedChatCompletions(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusServiceUnavailable, "no_active_variant", "routing policy has no active variant")
 		return
 	}
+	// 模型生产入口必须绑定通过门禁的正式发布；手工启动的 vLLM 只允许内部调试，不能被路由代理暴露。
+	if releaseModel, protected := inferenceReleaseVariant(variant); protected {
+		var validated bool
+		if err := a.Pool.QueryRow(r.Context(), `SELECT EXISTS(
+			SELECT 1 FROM deployments WHERE metadata->>'mode'='inference_runtime'
+			AND metadata->>'model_id'=$1 AND metadata->>'endpoint_id'=$2
+			AND status IN ('running','success') AND COALESCE((metadata->'gate'->>'passed')::boolean, false)=true
+		)`, releaseModel, variant.Endpoint).Scan(&validated); err != nil || !validated {
+			WriteError(w, r, http.StatusServiceUnavailable, "inference_not_released", "模型运行时尚未通过发布门禁，当前只能在推理服务控制面内部调试")
+			return
+		}
+	}
 	ep, status, err := a.resolveEndpoint(r.Context(), variant.Endpoint)
 	if err != nil {
+		obs.RecordServiceEdge(policyName, "routing-policy", variant.Endpoint, "serving", true)
 		// 落一条失败样本（status 0）后回写错误，便于灰度健康度观测。
 		a.recordRoutingSample(policyName, requestIDFor(r), variant, variant.Endpoint, upstreamResult{status: 0}, nil, routingTarget{})
+		go a.recordRequestTrace(requestTraceInput{
+			RequestID: requestIDFor(r), EndpointID: policyName, TargetPod: variant.Endpoint,
+			ModelID: modelFor(variant.Model, payloadModel), TotalMs: msSince(totalStart), Status: "error", Error: err.Error(),
+			Metadata: map[string]any{"plane": "routing", "variant": variant.Label},
+		})
 		WriteError(w, r, status, errCodeForStatus(status), err.Error())
 		return
 	}
@@ -131,7 +152,13 @@ func (a *API) routedChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	resp, err := dispatchUpstream(r.Context(), ep, rewriteModel(body, variant.Model), reqID, authz, primaryModel)
 	if err != nil {
+		obs.RecordServiceEdge(policyName, "routing-policy", ep.TargetPod, "serving", true)
 		a.collectAndRecord(policyName, reqID, variant, ep.TargetPod, upstreamResult{status: 0, latency: time.Since(start)}, shadowCh, shadowTarget)
+		go a.recordRequestTrace(requestTraceInput{
+			RequestID: reqID, EndpointID: policyName, TargetPod: ep.TargetPod, ModelID: primaryModel,
+			TotalMs: msSince(totalStart), QueueGatewayMs: float64(time.Since(start).Microseconds()) / 1000,
+			Status: "error", Error: err.Error(), Metadata: map[string]any{"plane": "routing", "variant": variant.Label},
+		})
 		WriteError(w, r, http.StatusBadGateway, "upstream_unreachable", "upstream endpoint unreachable: "+err.Error())
 		return
 	}
@@ -147,9 +174,38 @@ func (a *API) routedChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("x-target-pod", ep.TargetPod)
 	w.WriteHeader(resp.StatusCode)
 	written := streamCopy(w, resp)
+	obs.RecordServiceEdge(policyName, "routing-policy", ep.TargetPod, "serving", resp.StatusCode < 200 || resp.StatusCode >= 400)
 
 	a.collectAndRecord(policyName, reqID, variant, ep.TargetPod,
 		upstreamResult{status: resp.StatusCode, latency: time.Since(start), bytes: written}, shadowCh, shadowTarget)
+	traceStatus := "ok"
+	traceError := ""
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		traceStatus = "error"
+		traceError = http.StatusText(resp.StatusCode)
+	}
+	go a.recordRequestTrace(requestTraceInput{
+		RequestID: reqID, EndpointID: policyName, TargetPod: ep.TargetPod, ModelID: primaryModel,
+		QueueGatewayMs: float64(time.Since(start).Microseconds()) / 1000, TotalMs: msSince(totalStart),
+		Status: traceStatus, Error: traceError,
+		Metadata: map[string]any{"plane": "routing", "variant": variant.Label, "http_status": resp.StatusCode, "response_bytes": written},
+	})
+}
+
+// inferenceReleaseVariant 将已配置的模型生产 endpoint 标记为受发布门禁保护，
+// 避免 qwen35 等新模型因为不在旧的 qwen36 常量判断中而绕过正式发布校验。
+func inferenceReleaseVariant(variant routingVariant) (string, bool) {
+	modelID := strings.TrimSpace(variant.Model)
+	if modelID == "" {
+		modelID = inferenceModelIDFromEndpoint(variant.Endpoint)
+	}
+	if _, ok := inferenceModelSpecFor(modelID); !ok {
+		return "", false
+	}
+	spec, _ := inferenceModelSpecFor(modelID)
+	// AIBrix 稳定基线（aibrix-gateway）可作为灰度主版本，无需绑定本次
+	// 发布；发布中心创建的 direct 或 *-aibrix 候选 endpoint 必须有门禁证据。
+	return modelID, variant.Endpoint == spec.Endpoint || strings.HasSuffix(variant.Endpoint, "-aibrix")
 }
 
 // shadowCall 把请求镜像到影子目标：独立 background context + 超时，读尽并丢弃响应、只采指标。

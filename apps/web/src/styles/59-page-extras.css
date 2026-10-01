@@ -6,6 +6,36 @@
   gap: 8px;
   padding: 8px 0;
 }
+
+.obs-log-table { display: grid; gap: 0; overflow: auto; }
+.obs-log-row {
+  display: grid;
+  grid-template-columns: 110px 76px 150px minmax(130px, .7fr) minmax(360px, 2fr);
+  align-items: center;
+  min-width: 900px;
+  min-height: 42px;
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 12px;
+  padding: 7px 12px;
+}
+.obs-log-row.header { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.obs-log-row time, .obs-log-row span { color: var(--text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obs-log-row strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.obs-log-row code { color: var(--text-primary); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.pipeline-ci-list { display: grid; margin-top: 12px; }
+.pipeline-ci-list a { display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border-subtle); color: inherit; text-decoration: none; }
+.pipeline-ci-list a > i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+.pipeline-ci-list a > i.success { background: var(--success); }
+.pipeline-ci-list a > i.warning { background: var(--warning); }
+.pipeline-ci-list a > i.danger { background: var(--danger); }
+.pipeline-ci-list a span { min-width: 0; display: grid; }
+.pipeline-ci-list a strong, .pipeline-ci-list a small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipeline-ci-list a small { color: var(--text-muted); }
+.pipeline-ci-scope { margin: 12px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--surface-muted, #f8fafc); color: var(--text-muted); font-size: 12px; line-height: 1.65; }
+.pipeline-ci-scope code { color: var(--text-primary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.benchmark-failure-banner { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 7%, white); color: var(--danger); }
+.benchmark-failure-banner span { display: grid; gap: 3px; }
+.benchmark-failure-banner small { color: var(--text-secondary); line-height: 1.5; }
 .knowledge-search-form input {
   background: #ffffff;
   border: 1px solid #d8e0eb;

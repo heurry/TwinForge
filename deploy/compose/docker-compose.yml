@@ -1,9 +1,11 @@
 # 云原生 AI 设施平台 — 本地一键编排（Go-primary）
 #
-# 拓扑：前端 → go-server(:8081 单一入口) ──┬─ 原生 ops（PostgreSQL + Redis + MinIO）
-#                                          ├─ /api/ai/* → python-ai-service(:8200，诊断/chat/embed)
-#                                          ├─ k8s（pods/deployments/events/nodes）→ client-go 直读集群（5B.1）
-#                                          └─ host/gpu 节点采集 → go-agent(:8090, host 网络)
+# 拓扑：Web/Nginx(:5173) ─┬─ /api/*       → go-server(:8081)
+#                         └─ /agent-api/* → agent-api(:8180)
+#   go-server ─┬─ 原生 ops（PostgreSQL + Redis + MinIO）
+#              ├─ /api/ai/* → python-ai-service(:8200，诊断/chat/embed)
+#              ├─ k8s（pods/deployments/events/nodes）→ client-go 直读集群（5B.1）
+#              └─ host/gpu 节点采集 → go-agent(:8090, host 网络)
 #
 # 用法（在仓库根目录）：
 #   docker compose -f deploy/compose/docker-compose.yml up -d --build
@@ -16,6 +18,29 @@
 name: cloudnative-infra-platform
 
 services:
+  # 生产式前端入口：构建 React SPA，并由 Nginx 同源代理控制面与 Agent Platform。
+  # 不使用 `vite preview` 充当生产服务器，避免 /api 被 SPA fallback 误判为健康。
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    environment:
+      GO_SERVER_UPSTREAM: go-server:8081
+      AGENT_API_UPSTREAM: agent-api:8180
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      go-server:
+        condition: service_started
+      agent-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "if command -v wget >/dev/null; then wget -qO- http://127.0.0.1/ >/dev/null && wget -qO- --header='X-Tenant-ID: demo' http://127.0.0.1/agent-api/api/v1/capabilities >/dev/null; else curl -fsS http://127.0.0.1/ >/dev/null && curl -fsS -H 'X-Tenant-ID: demo' http://127.0.0.1/agent-api/api/v1/capabilities >/dev/null; fi"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
   postgres:
     # 5B.4c：pgvector/pgvector:pg16（带 vector 扩展）；migration 000006 建 vector 列/索引需要它。
     image: pgvector/pgvector:pg16
@@ -62,18 +87,46 @@ services:
     build:
       context: ../../server
       dockerfile: Dockerfile
+    # 本机 GitLab 密钥文件已被 .gitignore 排除；文件不存在时仍可以
+    # 以未连接 CI 的降级模式启动。
+    env_file:
+      - path: ./gitlab.env
+        required: false
     environment:
       DATABASE_URL: postgres://infra:infra@postgres:5432/infra_platform?sslmode=disable
       SERVER_ADDR: ":8081"
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-insecure-change-me}
+      AUTH_USERS: ${AUTH_USERS:-}
       CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
       # go-agent 用 host 网络（需连 minikube IP），故经宿主回环访问。
       AGENT_BASE_URL: http://host.docker.internal:8090
+      # service_instances 对外保留 127.0.0.1；容器内访问宿主机 vLLM 时改走网关地址。
+      UPSTREAM_LOOPBACK_HOST: host.docker.internal
       # 5B.1：控制面 client-go 直读集群（kubeconfig 内嵌证书；server 指向 minikube API）。
       KUBECONFIG: /etc/kubeconfig
+      # 本地演示默认开启 default 命名空间的受限 Kubernetes 写入。
+      # 正式模型发布会创建受控的 AIBrix/vLLM Deployment；通用扩缩容
+      # handler 仍受命名空间白名单和 serving 保护规则约束。
+      ALLOW_K8S_WRITES: ${ALLOW_K8S_WRITES:-true}
+      K8S_WRITE_NAMESPACES: ${K8S_WRITE_NAMESPACES:-default}
+      # 本地实验环境显式启用 PyTorchJob；仍只允许 training 命名空间。
+      ALLOW_TRAINING: "true"
+      TRAINING_NAMESPACES: training
+      TRAINING_HOST_PATH: /opt/twinforge
+      TRAINING_MOUNT_PATH: /opt/twinforge
+      TRAINING_ARTIFACT_SECRET: training-artifacts
+      TRAINING_OUTPUT_ROOT: /opt/twinforge/artifacts/training
       # 新 AI 服务（结构化诊断 / chat:stream / embed）在同一 compose 网络内。
       AI_SERVICE_BASE_URL: http://python-ai-service:8200
-      # cAdvisor 由 scripts/start_cadvisor_observability.sh 在宿主 18080 做 port-forward。
-      CADVISOR_URL: http://host.docker.internal:18080/metrics
+      # CI 提供商及 GitLab Project/Token 由上方 gitlab.env 注入，避免空的
+      # shell 变量覆盖文件中的密钥。
+      # 兼容旧 GitHub Actions 接入；CI_PROVIDER=github_actions 时启用。
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WORKFLOW_FILE: ${GITHUB_WORKFLOW_FILE:-ci.yml}
+      # cAdvisor 宿主端口可覆盖，避免与本机其他服务冲突。
+      CADVISOR_URL: http://host.docker.internal:${CADVISOR_PORT:-18081}/metrics
       # 5B.4a：Redis 横切（缓存 / 限流 / 幂等）；空则全降级。
       REDIS_URL: redis://redis:6379
       # 5B.4b：对象存储（compose 网络内 MinIO）；空则降级。
@@ -81,10 +134,14 @@ services:
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: infra-artifacts
+      # Serving benchmark 使用仓库内固定清洗切片，避免容器回退到内置短 prompt。
+      BENCHMARK_DATASET_PATH: /datasets/dianjin_csc_benchmark.jsonl
       # D1：全链路 trace 导出。默认空=关（/metrics 始终开）；启用方式见下方 observability profile。
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_INSECURE: "true"
       OTEL_SERVICE_NAME: go-control-plane
+      # Compose 服务经 minikube Docker 网络直连固定 NodePort；正式链路不依赖宿主 port-forward。
+      AIBRIX_GATEWAY_BASE_URL: ${AIBRIX_GATEWAY_BASE_URL:-http://minikube:30080/v1}
     ports:
       - "8081:8081"
     extra_hosts:
@@ -92,6 +149,7 @@ services:
     volumes:
       # 内嵌证书的 kubeconfig（server: https://192.168.49.2:8443）；供控制面 client-go 直读。
       - ./.secrets/kubeconfig:/etc/kubeconfig:ro
+      - ../../data/cleaned/dianjin_csc_benchmark.jsonl:/datasets/dianjin_csc_benchmark.jsonl:ro
     networks:
       - default
       # 接入 minikube 外部网络，使容器可达集群 API（192.168.49.2:8443）。
@@ -111,9 +169,19 @@ services:
       dockerfile: Dockerfile
     environment:
       # 默认 auto：试 live，失败回退 stub。无 GPU 环境可设 AI_STUB_MODE=on 强制确定性 stub。
-      AI_STUB_MODE: auto
-      AI_LLM_BASE_URL: http://host.docker.internal:8010/v1
-      AI_LLM_MODEL: qwen3-4b-customer
+      AI_STUB_MODE: ${AI_STUB_MODE:-auto}
+      # AIOps 默认探活宿主上的 OpenAI-Compatible endpoint；不再固定到 27B。
+      # auto 模式会读取 /v1/models，优先使用存活的 4B，再回退到其它已存活模型。
+      AI_LLM_BASE_URL: ${AI_LLM_BASE_URL:-http://minikube:30080/v1}
+      AI_LLM_BASE_URLS: ${AI_LLM_BASE_URLS:-http://minikube:30080/v1,http://host.docker.internal:8020/v1}
+      AI_LLM_MODEL: ${AI_LLM_MODEL:-auto}
+      AI_LLM_CANDIDATE_MODELS: ${AI_LLM_CANDIDATE_MODELS:-qwen35-4b-customer,qwen3-4b-customer,qwen38-27b-fp8,qwen36-27b-awq,qwen36-27b-fp8}
+      # 独立 Embedding 服务，默认读取宿主本地 Qwen3-Embedding-0.6B；
+      # 仍允许用 AI_EMBED_BASE_URL 切换到专用 GPU/vLLM deployment。
+      AI_EMBED_BASE_URL: ${AI_EMBED_BASE_URL:-http://embedding-service:8000/v1}
+      AI_EMBED_MODEL: ${AI_EMBED_MODEL:-qwen3-embedding-0.6b}
+      AI_EMBED_DIM: "1024"
+      AI_EMBED_API_KEY: ${AI_EMBED_API_KEY:-EMPTY}
       # D1：延续 Go 控制面的 traceparent 并向 vLLM 继续传播（默认空=关）。
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ai-service
@@ -121,12 +189,273 @@ services:
       - "8200:8200"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - minikube
+      - embedding-control
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8200/internal/health').status==200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 15s
+    depends_on:
+      embedding-service:
+        condition: service_healthy
+
+  # 独立的本地语义向量服务。默认 CPU 隔离运行，避免与占满两张 GPU 的
+  # 27B chat workload 争抢显存；对外保持 OpenAI /v1/embeddings 契约。
+  embedding-service:
+    build:
+      context: ../../apps/embedding-service
+      dockerfile: Dockerfile
+      args:
+        EMBEDDING_BASE_IMAGE: ${EMBEDDING_BASE_IMAGE:-local/train:qwen35-v1}
+    environment:
+      EMBEDDING_MODEL_PATH: /models/Qwen3-Embedding-0.6B
+      EMBEDDING_MODEL_NAME: ${AI_EMBED_MODEL:-qwen3-embedding-0.6b}
+      EMBEDDING_MAX_LENGTH: ${EMBEDDING_MAX_LENGTH:-1024}
+      EMBEDDING_MAX_BATCH_SIZE: ${EMBEDDING_MAX_BATCH_SIZE:-16}
+      EMBEDDING_CPU_THREADS: ${EMBEDDING_CPU_THREADS:-8}
+      EMBEDDING_DTYPE: ${EMBEDDING_DTYPE:-float32}
+    volumes:
+      - ${EMBEDDING_MODEL_HOST_PATH:-/mnt/nvme-data/LLM/models/Qwen3-Embedding-0.6B}:/models/Qwen3-Embedding-0.6B:ro
+    expose:
+      - "8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: ${EMBEDDING_CPU_LIMIT:-8.0}
+    mem_limit: ${EMBEDDING_MEMORY_LIMIT:-6g}
+    networks:
+      - embedding-control
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
+  agent-migrate:
+    build:
+      context: ../../agent-platform
+      dockerfile: Dockerfile
+    entrypoint: ["/app/agent-migrate"]
+    environment:
+      AGENT_DATABASE_URL: postgres://infra:infra@postgres:5432/infra_platform?sslmode=disable
+      AGENT_MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  agent-api:
+    build:
+      context: ../../agent-platform
+      dockerfile: Dockerfile
+    environment:
+      AGENT_DATABASE_URL: postgres://infra:infra@postgres:5432/infra_platform?sslmode=disable
+      AGENT_REDIS_URL: redis://redis:6379/0
+      AGENT_API_ADDR: ":8180"
+      # Provision the platform-owned Reviewer Agent and publish a builder
+      # version with a bounded delegate_agent allowlist for the demo tenant.
+      # Production tenants should set this explicitly or leave it empty.
+      AGENT_COLLABORATION_BOOTSTRAP_TENANT: ${AGENT_COLLABORATION_BOOTSTRAP_TENANT:-demo}
+      AGENT_AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AGENT_AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-dev-insecure-change-me}
+      AGENT_AUTH_DEFAULT_TENANT: ${AGENT_AUTH_DEFAULT_TENANT:-demo}
+      AGENT_A2A_DEFAULT_AGENT_ID: ${AGENT_A2A_DEFAULT_AGENT_ID:-}
+      AGENT_MCP_ALLOWED_HOSTS: ${AGENT_MCP_ALLOWED_HOSTS:-}
+      AGENT_SANDBOX_ENDPOINT: http://agent-sandbox:8190
+      AGENT_SANDBOX_TOKEN: ${AGENT_SANDBOX_TOKEN:-local-sandbox-token-change-in-production}
+      AGENT_PROJECT_ACCESS_ENDPOINT: http://agent-project-broker:8192
+      AGENT_PROJECT_ACCESS_TOKEN: ${AGENT_PROJECT_ACCESS_TOKEN:-local-project-access-token-change-in-production}
+      # Agent Artifact：PG 保存元数据，内容写入独立 MinIO bucket。
+      AGENT_S3_ENDPOINT: minio:9000
+      AGENT_S3_ACCESS_KEY: minioadmin
+      AGENT_S3_SECRET_KEY: minioadmin
+      AGENT_S3_BUCKET: agent-artifacts
+      AGENT_S3_REGION: us-east-1
+      AGENT_S3_USE_SSL: "false"
+      # Agent Memory：仅接受 live embedding 作为正式语义索引；stub 时自动词法降级。
+      AGENT_EMBEDDING_URL: http://python-ai-service:8200
+      AGENT_EMBEDDING_DIM: "1024"
+      AGENT_EMBEDDING_REQUIRE_LIVE: ${AGENT_EMBEDDING_REQUIRE_LIVE:-true}
+      # Temporary evaluation switch: remove the aggregate ReAct turn/model-call
+      # cap. Tool, context, timeout, cancellation and lease safeguards remain.
+      AGENT_DISABLE_REACT_STEP_LIMIT: ${AGENT_DISABLE_REACT_STEP_LIMIT:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8180:8180"
+    depends_on:
+      agent-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      python-ai-service:
+        condition: service_healthy
+      agent-sandbox:
+        condition: service_healthy
+      agent-project-broker:
+        condition: service_healthy
+    networks:
+      - default
+      - sandbox-control
+
+  # 文件工具在独立的最小权限容器内执行。该服务仅接入 internal
+  # sandbox-control 网络，无法访问模型、数据库或公网。
+  agent-sandbox:
+    image: twinforge/agent-sandbox:python-game-v1
+    build:
+      context: ../../agent-platform
+      dockerfile: Dockerfile.sandbox-runtime
+    entrypoint: ["/app/agent-sandbox"]
+    user: "${AGENT_WORKSPACE_UID:-1000}:${AGENT_WORKSPACE_GID:-1000}"
+    environment:
+      AGENT_SANDBOX_WORKSPACE_ROOT: /workspace
+      AGENT_SANDBOX_TOKEN: ${AGENT_SANDBOX_TOKEN:-local-sandbox-token-change-in-production}
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    volumes:
+      - ../../.agent-workspaces:/workspace/.agent-workspaces
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "/app/agent-sandbox", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # 可信项目文件代理是唯一能够看到宿主项目目录的 Agent 组件。它只提供
+  # 精确文件读取和 Artifact 乐观锁合并，不提供命令执行、目录枚举或模型接口。
+  # Worker 只有在持久化审批通过后才会向该内部端点发起一次读取。
+  agent-project-broker:
+    build:
+      context: ../../agent-platform
+      dockerfile: Dockerfile
+    entrypoint: ["/app/agent-project-broker"]
+    user: "${AGENT_WORKSPACE_UID:-1000}:${AGENT_WORKSPACE_GID:-1000}"
+    environment:
+      AGENT_PROJECT_ROOT: /project
+      AGENT_PROJECT_ACCESS_TOKEN: ${AGENT_PROJECT_ACCESS_TOKEN:-local-project-access-token-change-in-production}
+    volumes:
+      - ../../:/project
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "/app/agent-project-broker", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # 未命中预构建环境模板的依赖只能经此服务安装。它不接触源码根目录、
+  # 数据库或 Docker socket，只能写入单个 Run 的保留依赖目录；pip 参数
+  # 由服务端构造，模型和审批请求都不能提交 Shell、URL 或安装路径。
+  agent-dependency-installer:
+    image: twinforge/agent-sandbox:python-game-v1
+    build:
+      context: ../../agent-platform
+      dockerfile: Dockerfile.sandbox-runtime
+    entrypoint: ["/app/agent-dependency-installer"]
+    user: "${AGENT_WORKSPACE_UID:-1000}:${AGENT_WORKSPACE_GID:-1000}"
+    environment:
+      AGENT_DEPENDENCY_WORKSPACE_ROOT: /workspace
+      AGENT_DEPENDENCY_INSTALLER_TOKEN: ${AGENT_DEPENDENCY_INSTALLER_TOKEN:-local-dependency-token-change-in-production}
+      AGENT_DEPENDENCY_SOURCES: '${AGENT_DEPENDENCY_SOURCES:-{"pypi":"https://pypi.org/simple"}}'
+    volumes:
+      - ../../.agent-workspaces:/workspace/.agent-workspaces
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "/app/agent-dependency-installer", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  agent-worker:
+    build:
+      context: ../../agent-platform
+      dockerfile: Dockerfile
+    entrypoint: ["/app/agent-worker"]
+    environment:
+      AGENT_DATABASE_URL: postgres://infra:infra@postgres:5432/infra_platform?sslmode=disable
+      AGENT_REDIS_URL: redis://redis:6379/0
+      AGENT_MODEL_SERVICES: >-
+        {"qwen-customer":{"endpoint":"http://minikube:30080/v1","model":"qwen3-4b-customer","context_window_tokens":4096,"discovery_strategy":"chat_probe","capabilities":["chat","tool_calling"]},"qwen-serving":{"endpoint":"http://host.docker.internal:8020/v1","model":"qwen38-27b-fp8","discovery_strategy":"models","capabilities":["chat","tool_calling"]}}
+      AGENT_TOOL_ALLOWED_HOSTS: ${AGENT_TOOL_ALLOWED_HOSTS:-go-server:8081,python-ai-service:8200}
+      AGENT_MCP_ALLOWED_HOSTS: ${AGENT_MCP_ALLOWED_HOSTS:-}
+      AGENT_WORKSPACE_MODE: sandbox
+      AGENT_SANDBOX_ENDPOINT: http://agent-sandbox:8190
+      AGENT_SANDBOX_TOKEN: ${AGENT_SANDBOX_TOKEN:-local-sandbox-token-change-in-production}
+      AGENT_DEPENDENCY_INSTALLER_ENDPOINT: http://agent-dependency-installer:8191
+      AGENT_DEPENDENCY_INSTALLER_TOKEN: ${AGENT_DEPENDENCY_INSTALLER_TOKEN:-local-dependency-token-change-in-production}
+      AGENT_PROJECT_ACCESS_ENDPOINT: http://agent-project-broker:8192
+      AGENT_PROJECT_ACCESS_TOKEN: ${AGENT_PROJECT_ACCESS_TOKEN:-local-project-access-token-change-in-production}
+      AGENT_DEPENDENCY_SOURCES: '${AGENT_DEPENDENCY_SOURCES:-{"pypi":"https://pypi.org/simple"}}'
+      AGENT_ENVIRONMENT_TEMPLATE: python-game:1
+      AGENT_ENVIRONMENT_DEPENDENCIES: pygame==2.6.1
+      AGENT_S3_ENDPOINT: minio:9000
+      AGENT_S3_ACCESS_KEY: minioadmin
+      AGENT_S3_SECRET_KEY: minioadmin
+      AGENT_S3_BUCKET: agent-artifacts
+      AGENT_S3_REGION: us-east-1
+      AGENT_S3_USE_SSL: "false"
+      AGENT_EMBEDDING_URL: http://python-ai-service:8200
+      AGENT_EMBEDDING_DIM: "1024"
+      AGENT_EMBEDDING_REQUIRE_LIVE: ${AGENT_EMBEDDING_REQUIRE_LIVE:-true}
+      # Keep API and Worker rollout configuration aligned. Execution is in the
+      # Worker; setting this on both avoids confusing mixed-runtime diagnostics.
+      AGENT_DISABLE_REACT_STEP_LIMIT: ${AGENT_DISABLE_REACT_STEP_LIMIT:-true}
+      # Cancellation is durable in PostgreSQL; a short heartbeat bounds how
+      # long an in-flight model/tool request takes to observe a stop request.
+      AGENT_WORKER_HEARTBEAT_INTERVAL: ${AGENT_WORKER_HEARTBEAT_INTERVAL:-2s}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8181:8181"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - minikube
+      - sandbox-control
+    depends_on:
+      agent-migrate:
+        condition: service_completed_successfully
+      agent-sandbox:
+        condition: service_healthy
+      agent-dependency-installer:
+        condition: service_healthy
+      agent-project-broker:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      python-ai-service:
+        condition: service_healthy
 
   go-agent:
     build:
@@ -144,10 +473,18 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: utility
       LD_LIBRARY_PATH: /nvidia/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+      # 固定白名单 vLLM workload 的生命周期控制；不接受任意镜像、路径或命令。
+      INFERENCE_CONTROL_ENABLED: "true"
+      INFERENCE_VLLM_IMAGE: local/vllm-openai:qwen35-v0.19.1
+      INFERENCE_MODEL_PATH: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-FP8
+      INFERENCE_CACHE_PATH: /mnt/nvme-data/LLM/llm_train_platform_miniv2/.cache/vllm/managed
+      INFERENCE_CONTAINER_NAME: twinforge-vllm-managed
     volumes:
       # Docker GPU runtime 异常时的本地兜底：让 Agent 可直接调用宿主 nvidia-smi/NVML。
       - /usr/bin/nvidia-smi:/host/usr/bin/nvidia-smi:ro
       - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/nvidia/lib/libnvidia-ml.so.1:ro
+      # Node Agent 通过 Docker Engine API 管理固定推理 workload。
+      - /var/run/docker.sock:/var/run/docker.sock
     privileged: true
 
   # ===== D1：全链路可观测栈（profile=observability，按需启用，不影响默认 up）=====
@@ -192,6 +529,10 @@ services:
 
 networks:
   default:
+  sandbox-control:
+    internal: true
+  embedding-control:
+    internal: true
   # minikube 创建的外部网络；go-server 接入它以直达集群 API。
   # 若用其它集群（kind/k3s/云），改为对应网络或删除此段并让 KUBECONFIG 指向可达地址。
   minikube:

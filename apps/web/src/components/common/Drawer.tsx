@@ -12,7 +12,8 @@ export function Drawer({
   title,
   subtitle,
   children,
-  footer
+  footer,
+  className,
 }: {
   open: boolean;
   onClose: () => void;
@@ -20,6 +21,7 @@ export function Drawer({
   subtitle?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  className?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -35,7 +37,7 @@ export function Drawer({
   return (
     <div className="infra-drawer-overlay" onClick={onClose} role="presentation">
       <aside
-        className="infra-drawer"
+        className={["infra-drawer", className].filter(Boolean).join(" ")}
         role="dialog"
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}

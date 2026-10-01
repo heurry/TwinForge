@@ -10,10 +10,48 @@ base_models:
     recommended_vllm_args:
       tensor_parallel_size: 1
       dtype: float16
-      gpu_memory_utilization: 0.90
+      gpu_memory_utilization: 0.60  # 原 0.90：不占满 VRAM，给训练共置留余量
       max_num_seqs: 64
       max_num_batched_tokens: 8192
       enable_prefix_caching: true
+  - name: qwen36-27b-fp8-base
+    model_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-FP8
+    tokenizer_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-FP8
+    model_family: Qwen3.6
+    parameter_size: 27B
+    quantization: fp8
+    default_max_model_len: 4096
+    recommended_vllm_args:
+      tensor_parallel_size: 2
+      dtype: auto
+      quantization: fp8
+      gpu_memory_utilization: 0.90
+      max_num_seqs: 8
+      max_num_batched_tokens: 4096
+      enable_prefix_caching: false
+      enable_chunked_prefill: true
+      disable_custom_all_reduce: true
+      generation_config: vllm
+  - name: qwen36-27b-awq-w4a16
+    model_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+    tokenizer_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+    model_family: Qwen3.6
+    parameter_size: 27B
+    quantization: awq_w4a16_asym_group128
+    calibration_dataset: DianJin/DianJin-CSC-Data
+    calibration_samples: 128
+    mixed_precision_exclusions: [linear_attention, visual_tower, lm_head]
+    default_max_model_len: 4096
+    recommended_vllm_args:
+      tensor_parallel_size: 2
+      dtype: float16
+      gpu_memory_utilization: 0.85
+      max_num_seqs: 8
+      max_num_batched_tokens: 4096
+      enable_prefix_caching: true
+      enable_chunked_prefill: true
+      disable_custom_all_reduce: true
+      generation_config: vllm
 served_models:
   - served_model_name: qwen3-4b-customer
     aibrix_service_name: qwen3-4b-customer
@@ -27,4 +65,36 @@ served_models:
       max_tokens: 256
       recommended_concurrency_levels: [1, 2, 4, 8, 16]
       benchmark_report: runs/serve/qwen3_4b_aibrix_gateway_benchmark.md
+  - served_model_name: qwen36-27b-fp8
+    aibrix_service_name: qwen36-27b-fp8-vllm
+    base_model: qwen36-27b-fp8-base
+    artifact_type: base_model
+    artifact_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-FP8
+    task_type: customer_support_inference_optimization
+    serving_profile:
+      max_model_len: 4096
+      max_tokens: 256
+      recommended_concurrency_levels: [1, 2, 4, 8, 16]
+      context_lengths: [1024, 2048]
+      benchmark_dataset: DianJin/DianJin-CSC-Data
+  - served_model_name: qwen36-27b-awq
+    aibrix_service_name: qwen36-27b-awq-vllm
+    base_model: qwen36-27b-awq-w4a16
+    artifact_type: quantized_model
+    artifact_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+    task_type: customer_support_inference_optimization
+    serving_profile:
+      tensor_parallel_size: 2
+      max_model_len: 4096
+      max_tokens: 256
+      max_num_seqs: 8
+      max_num_batched_tokens: 4096
+      enable_prefix_caching: true
+      frequency_penalty: 1.0
+      stop_policy: no_emoji_customer_response
+      recommended_concurrency_levels: [1, 2, 4, 8, 16]
+      context_lengths: [1024, 2048]
+      benchmark_dataset: DianJin/DianJin-CSC-Data
+      baseline_run_id: 9961414c-d1cd-41fa-93a1-afd3a1d35d82
+      optimized_run_id: 5f40b745-f679-4aef-a993-998721293a06
 adapters: []

@@ -10,7 +10,9 @@ metadata:
 spec:
   strategy:
     type: Recreate
-  replicas: 2
+  # 本机只有两张 GPU：保留 1 个 AIBrix 稳定副本，另一张卡供受控候选
+  # vLLM 使用，才能真实执行 stable/canary 灰度，而不是只改数据库权重。
+  replicas: 1
   selector:
     matchLabels:
       app: qwen3-4b-customer
@@ -35,14 +37,18 @@ spec:
             - /models/Qwen3.5-4B
             - --served-model-name
             - qwen3-4b-customer
+            # 兼容平台当前统一使用的模型 ID；保留旧别名避免历史路由失效。
+            - qwen35-4b-customer
             - --tensor-parallel-size
             - "1"
             - --dtype
             - float16
             - --max-model-len
             - "4096"
+            # 显存上限：0.60（原 0.90）——避免启动即预占满 VRAM，给训练/共置留余量；
+            # 切 1.7B 后目标降到 ~0.40（见 docs/KUBEFLOW-TRAINING-PLAN.md §资源与显存划分）。
             - --gpu-memory-utilization
-            - "0.90"
+            - "0.60"
             - --max-num-seqs
             - "64"
             - --max-num-batched-tokens

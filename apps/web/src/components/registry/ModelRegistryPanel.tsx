@@ -4,14 +4,17 @@
 // 产物(上传至 MinIO 或下载) / 状态切换 / 注销。纯展示 + 调用 useModelRegistry 的写操作。
 import { useRef } from "react";
 import { toast } from "sonner";
-import { Download, Trash2, UploadCloud } from "lucide-react";
+import { CheckCircle2, Download, Gauge, Rocket, Trash2, UploadCloud } from "lucide-react";
 
 import { StatusBadge } from "../common/PlatformPrimitives";
 import { describeError, EmptyState, ErrorState, Skeleton } from "../common/FeedbackStates";
 import { modelArtifactURL } from "../../lib/api";
 import type { ModelRegistry } from "../../lib/useModelRegistry";
+import type { RegisteredModelVersion } from "../../types/registry";
 
-export function ModelRegistryPanel({ registry }: { registry: ModelRegistry }) {
+const inferenceModelIDs = new Set(["qwen38-27b-fp8", "qwen36-27b-fp8", "qwen36-27b-awq", "qwen35-4b-customer", "qwen3-4b-customer"]);
+
+export function ModelRegistryPanel({ registry, selectedVersionID, onSelect, onBenchmark, onRelease }: { registry: ModelRegistry; selectedVersionID?: string; onSelect?: (version: RegisteredModelVersion) => void; onBenchmark?: (version: RegisteredModelVersion) => void; onRelease?: (version: RegisteredModelVersion) => void }) {
   const { list } = registry;
   const versions = list.data?.versions ?? [];
   const bindings = list.data?.bindings ?? {};
@@ -41,7 +44,7 @@ export function ModelRegistryPanel({ registry }: { registry: ModelRegistry }) {
         {versions.map((v) => {
           const bound = bindings[v.model_id] ?? [];
           return (
-            <tr key={v.id}>
+            <tr className={selectedVersionID === v.id ? "registry-row-selected" : undefined} key={v.id}>
               <td>
                 <strong>{v.model_id}</strong>
                 <span className="cell-subtle">{v.version}{v.created_by ? ` · ${v.created_by}` : ""}</span>
@@ -65,6 +68,9 @@ export function ModelRegistryPanel({ registry }: { registry: ModelRegistry }) {
                 )}
               </td>
               <td className="registry-actions">
+                {onSelect ? <button className="link-btn" type="button" title="设为当前交付版本" onClick={() => onSelect(v)}><CheckCircle2 size={13} /></button> : null}
+                {inferenceModelIDs.has(v.model_id) && onBenchmark ? <button className="link-btn" type="button" title="进入推理验收" onClick={() => onBenchmark(v)}><Gauge size={13} /></button> : null}
+                {inferenceModelIDs.has(v.model_id) && onRelease ? <button className="link-btn" type="button" title="进入发布" onClick={() => onRelease(v)}><Rocket size={13} /></button> : null}
                 <select
                   value={v.status}
                   disabled={registry.setStatus.isPending}

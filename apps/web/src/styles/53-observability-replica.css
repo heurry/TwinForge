@@ -294,6 +294,16 @@
 .obs-chart-legend .ai i { background: #7c3aed; }
 .obs-chart-legend .neutral i { background: #94a3b8; }
 
+.obs-chart-notice {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  color: #9a3412;
+  font-size: 11px;
+  margin: 4px 0 0;
+  padding: 5px 8px;
+}
+
 .obs-latency-chart svg {
   height: 230px;
   width: 100%;
@@ -344,6 +354,20 @@
 .obs-latency-chart .line-warning { stroke: #ea580c; }
 .obs-latency-chart .line-danger { stroke: #dc2626; }
 .obs-latency-chart .line-ai { stroke: #7c3aed; }
+.obs-latency-chart .series-p50-latency polyline,
+.obs-latency-chart .series-p50-ttft polyline { stroke-dasharray: 2 5; stroke-width: 4; }
+.obs-latency-chart .series-p95-latency polyline,
+.obs-latency-chart .series-p95-ttft polyline { stroke-dasharray: 8 5; stroke-width: 3; }
+.obs-latency-chart circle { fill: #ffffff; stroke-width: 1.8; }
+.obs-latency-chart .point-info { stroke: #2563eb; }
+.obs-latency-chart .point-success { stroke: #16a34a; }
+.obs-latency-chart .point-warning { stroke: #ea580c; }
+.obs-latency-chart .point-danger { stroke: #dc2626; }
+.obs-latency-chart .point-ai { stroke: #7c3aed; }
+
+.obs-log-query-row { flex-wrap: wrap; }
+.obs-log-query-row select:disabled,
+.obs-log-query-row button:disabled { cursor: not-allowed; opacity: .55; }
 
 .obs-current-table,
 .obs-service-table,

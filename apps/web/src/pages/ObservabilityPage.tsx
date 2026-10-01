@@ -9,7 +9,7 @@ import { EmptyState, ErrorState, Skeleton } from "../components/common/FeedbackS
 import { api } from "../lib/api";
 import { byteRate, bytes, compact, fmt, relativeTime } from "../lib/format";
 import { cn } from "../lib/utils";
-import type { Metrics, MetricsHistorySample, RequestTrace } from "../types/platform";
+import type { KubernetesSnapshot, Metrics, MetricsHistorySample, RequestTrace } from "../types/platform";
 import type { KpiItem } from "../types/ui";
 
 type ObsTone = "info" | "success" | "warning" | "danger" | "ai";
@@ -25,6 +25,16 @@ type AlertRow = {
   threshold: string;
   status: string;
   triggered_at: string;
+};
+type PlatformLog = {
+  id: number | string;
+  timestamp: string | null;
+  level: string;
+  source: string;
+  resource_type: string;
+  resource_id: string;
+  message: string;
+  attributes: Record<string, unknown>;
 };
 
 type ServiceRow = {
@@ -70,21 +80,30 @@ export function ObservabilityPage() {
   const goTo = useGoToPage();
   const [activeTab, setActiveTab] = useState<ObsTab>("指标总览");
   const [query, setQuery] = useState("");
+  const [logDraft, setLogDraft] = useState("");
+  const [logSearch, setLogSearch] = useState("");
+  const [logMode, setLogMode] = useState<"platform" | "kubernetes">("platform");
+  const [logNamespace, setLogNamespace] = useState("default");
+  const [logPod, setLogPod] = useState("");
+  const [logContainer, setLogContainer] = useState("");
+  const [logLevel, setLogLevel] = useState("");
+  const [logSource, setLogSource] = useState("");
+  const [logResourceType, setLogResourceType] = useState("");
   const [serviceFilter, setServiceFilter] = useState<string>(ALL_SERVICES);
   const [instanceFilter, setInstanceFilter] = useState<string>(ALL_INSTANCES);
   const [metricFilter, setMetricFilter] = useState<ObsMetricFilter>("延迟 (P95)");
   const [groupBy, setGroupBy] = useState<ObsGroupBy>("服务");
   const [refreshMs, setRefreshMs] = useState(5000);
   const [paused, setPaused] = useState(false);
-  const [historyLimit, setHistoryLimit] = useState(30);
+  const [historyMinutes, setHistoryMinutes] = useState(30);
   const metricsQuery = useQuery({
     queryKey: ["metrics", "current"],
     queryFn: () => api<Metrics>("/api/metrics/current"),
     refetchInterval: paused ? false : refreshMs
   });
   const historyQuery = useQuery({
-    queryKey: ["metrics", "history", historyLimit],
-    queryFn: () => api<{ samples: MetricsHistorySample[] }>(`/api/metrics/history?limit=${historyLimit}`),
+    queryKey: ["metrics", "history", historyMinutes],
+    queryFn: () => api<{ samples: MetricsHistorySample[] }>(`/api/metrics/history?minutes=${historyMinutes}&limit=2000`),
     refetchInterval: paused ? false : refreshMs
   });
   const tracesQuery = useQuery({
@@ -97,6 +116,36 @@ export function ObservabilityPage() {
     queryFn: () => api<{ alerts: AlertRow[]; summary: Record<string, number> }>("/api/alerts"),
     refetchInterval: paused ? false : refreshMs
   });
+  const logPodsQuery = useQuery({
+    queryKey: ["kubernetes", "snapshot", "log-picker"],
+    queryFn: () => api<KubernetesSnapshot>("/api/kubernetes/snapshot"),
+    enabled: activeTab === "日志检索" && logMode === "kubernetes",
+    staleTime: 15_000,
+  });
+  const logSince = () => new Date(Date.now() - historyMinutes * 60_000).toISOString();
+  const logsQuery = useQuery({
+    queryKey: ["platform-logs", logSearch, logMode, logNamespace, logPod, logContainer, logLevel, logSource, logResourceType, historyMinutes],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "300", q: logSearch, since: logSince() });
+      if (logMode === "kubernetes" && logPod.trim()) {
+        params.set("namespace", logNamespace.trim() || "default");
+        params.set("pod", logPod.trim());
+        if (logContainer) params.set("container", logContainer);
+      } else {
+        if (logLevel) params.set("level", logLevel);
+        if (logSource) params.set("source", logSource);
+        if (logResourceType) params.set("resource_type", logResourceType);
+      }
+      return api<{ logs: PlatformLog[]; count: number; source?: string }>(`/api/logs?${params.toString()}`);
+    },
+    enabled: activeTab === "日志检索" && (logMode === "platform" || Boolean(logPod)),
+    refetchInterval: paused ? false : refreshMs
+  });
+
+  const logPods = logPodsQuery.data?.pods ?? [];
+  const logNamespaces = uniqueStrings(logPods.map((pod) => pod.namespace));
+  const namespacePods = logPods.filter((pod) => pod.namespace === logNamespace);
+  const selectedLogPod = namespacePods.find((pod) => pod.name === logPod);
 
   const metrics = metricsQuery.data ?? null;
   const reqCount = metrics?.request_count ?? null;
@@ -191,12 +240,21 @@ export function ObservabilityPage() {
     setInstanceFilter(ALL_INSTANCES);
     setMetricFilter("延迟 (P95)");
     setGroupBy("服务");
+    setLogNamespace("default");
+    setLogPod("");
+    setLogContainer("");
+    setLogDraft("");
+    setLogSearch("");
+    setLogLevel("");
+    setLogSource("");
+    setLogResourceType("");
   };
   const refetchAll = () => {
     metricsQuery.refetch();
     historyQuery.refetch();
     tracesQuery.refetch();
     alertsQuery.refetch();
+    if (activeTab === "日志检索") logsQuery.refetch();
   };
   const showOverview = activeTab === "指标总览";
   const showTracing = activeTab === "请求追踪";
@@ -214,7 +272,7 @@ export function ObservabilityPage() {
   return (
     <section className="infra-page observability-page obs-replica">
       <PageHeader
-        title="可观测性"
+        title="可观测中心"
         subtitle="实时监控、指标分析、链路追踪与日志检索"
         actions={
           <button
@@ -226,16 +284,6 @@ export function ObservabilityPage() {
           </button>
         }
       />
-
-      <div className="obs-process-ribbon">
-        {["发现问题", "定位对象", "分析原因", "推荐动作", "执行修复", "验证恢复"].map((label, index) => (
-          <div className={cn("obs-process-step", index === 0 && "active")} key={label}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <strong>{label}</strong>
-            <small>{index === 0 ? "指标监控" : index === 1 ? "服务/实例" : "SLO 验证"}</small>
-          </div>
-        ))}
-      </div>
 
       <KpiGrid className="obs-kpi-strip" items={kpis} />
 
@@ -255,10 +303,12 @@ export function ObservabilityPage() {
           ))}
           <div className="obs-refresh-meta">
             <span>时间范围</span>
-            <select onChange={(event) => setHistoryLimit(Number(event.target.value))} value={historyLimit}>
+            <select onChange={(event) => setHistoryMinutes(Number(event.target.value))} value={historyMinutes}>
               <option value={30}>近 30 分钟</option>
               <option value={60}>近 1 小时</option>
               <option value={180}>近 3 小时</option>
+              <option value={1440}>近 24 小时</option>
+              <option value={10080}>近 7 天</option>
             </select>
             <span>刷新</span>
             <select disabled={paused} onChange={(event) => setRefreshMs(Number(event.target.value))} value={refreshMs}>
@@ -271,6 +321,42 @@ export function ObservabilityPage() {
             </button>
           </div>
         </div>
+        {showLogs ? (
+        <div className="obs-query-row obs-log-query-row">
+          <label>日志来源
+            <select onChange={(event) => { setLogMode(event.target.value as "platform" | "kubernetes"); setLogPod(""); setLogContainer(""); }} value={logMode}>
+              <option value="platform">平台事件索引</option>
+              <option value="kubernetes">Kubernetes Pod</option>
+            </select>
+          </label>
+          {logMode === "platform" ? <>
+            <label>级别<select onChange={(event) => setLogLevel(event.target.value)} value={logLevel}>
+              <option value="">全部级别</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option>
+            </select></label>
+            <label>事件来源<select onChange={(event) => setLogSource(event.target.value)} value={logSource}>
+              <option value="">全部来源</option><option value="gitlab-ci">GitLab CI</option><option value="github-actions">GitHub Actions</option><option value="deployment-runner">部署执行器</option><option value="training-runner">训练任务</option><option value="routing-controller">流量治理</option><option value="healthcheck">健康检查</option>
+            </select></label>
+            <label>资源类型<select onChange={(event) => setLogResourceType(event.target.value)} value={logResourceType}>
+              <option value="">全部资源</option><option value="deployment">Deployment</option><option value="service_instance">服务实例</option><option value="training_job">训练任务</option><option value="repository">代码仓库</option>
+            </select></label>
+          </> : <>
+            <label>Namespace<select onChange={(event) => { setLogNamespace(event.target.value); setLogPod(""); setLogContainer(""); }} value={logNamespace}>
+              {!logNamespaces.includes(logNamespace) ? <option value={logNamespace}>{logNamespace}</option> : null}
+              {logNamespaces.map((namespace) => <option key={namespace} value={namespace}>{namespace}</option>)}
+            </select></label>
+            <label>Pod<select onChange={(event) => { setLogPod(event.target.value); setLogContainer(""); }} value={logPod}>
+              <option value="">请选择 Pod</option>{namespacePods.map((pod) => <option key={pod.name} value={pod.name}>{pod.name}</option>)}
+            </select></label>
+            <label>容器<select disabled={!logPod} onChange={(event) => setLogContainer(event.target.value)} value={logContainer}>
+              <option value="">{selectedLogPod?.containers?.length === 1 ? "默认容器" : "请选择容器"}</option>
+              {(selectedLogPod?.containers ?? []).map((container) => <option key={container} value={container}>{container}</option>)}
+            </select></label>
+          </>}
+          <label className="obs-query-search"><Search size={13} /><input onChange={(event) => setLogDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setLogSearch(logDraft.trim()); }} placeholder="搜索日志内容" value={logDraft} /></label>
+          <button className="obs-reset" onClick={resetFilters} type="button">重置</button>
+          <button className="obs-submit" disabled={logMode === "kubernetes" && !logPod} onClick={() => { const next = logDraft.trim(); if (next === logSearch) logsQuery.refetch(); else setLogSearch(next); }} type="button">查询</button>
+        </div>
+        ) : (
         <div className="obs-query-row">
           <label>服务
             <select aria-label="服务筛选" onChange={(event) => setServiceFilter(event.target.value)} value={serviceFilter}>
@@ -298,13 +384,14 @@ export function ObservabilityPage() {
           <button className="obs-reset" onClick={resetFilters} type="button">重置</button>
           <button className="obs-submit" onClick={refetchAll} type="button">查询</button>
         </div>
+        )}
       </section>
 
       <div className={cn("obs-tab-content", `tab-${tabClass}`)} role="tabpanel">
         {showOverview ? (
           <section className="infra-panel obs-trend-panel">
             <div className="obs-trend-main">
-              <PanelHeader title={latencyChart.title} action={`近 ${samples.length || 0} 个采样点`} />
+              <PanelHeader title={latencyChart.title} action={`近 ${historyMinutes} 分钟 · ${samples.length || 0} 个采样点`} />
               {historyQuery.isLoading ? (
                 <Skeleton rows={4} />
               ) : historyQuery.isError ? (
@@ -602,8 +689,23 @@ export function ObservabilityPage() {
 
         {showLogs ? (
           <section className="infra-panel obs-log-panel">
-            <PanelHeader title="日志检索" action="未接入" />
-            <EmptyState title="暂无日志数据" description="当前后端没有暴露日志检索 API" />
+            <PanelHeader title="日志检索" action={logsQuery.data ? `${logsQuery.data.count} 条 · ${logsQuery.data.source === "kubernetes" ? `${logNamespace}/${logPod}${logContainer ? `/${logContainer}` : ""}` : "平台事件索引"}` : `近 ${historyMinutes} 分钟`} />
+            {logsQuery.isLoading ? <Skeleton rows={6} /> : logsQuery.isError ? (
+              <ErrorState error={logsQuery.error} onRetry={logsQuery.refetch} />
+            ) : !logsQuery.data?.logs.length ? (
+              <EmptyState title={logMode === "kubernetes" && !logPod ? "请选择 Pod" : "暂无匹配日志"} description={logMode === "kubernetes" ? (logPodsQuery.isError ? "集群 Pod 列表读取失败，请检查 Kubernetes 连接。" : `未读取到 ${logNamespace}/${logPod || "所选 Pod"} 的匹配日志。`) : "当前时间范围内没有符合条件的平台操作或运行事件。Pod 标准输出请切换到 Kubernetes Pod。"} />
+            ) : (
+              <div className="obs-log-table">
+                <div className="obs-log-row header"><span>时间</span><span>级别</span><span>来源</span><span>资源</span><span>消息</span></div>
+                {logsQuery.data.logs.map((log) => <div className="obs-log-row" key={log.id}>
+                  <time>{log.timestamp ? relativeTime(log.timestamp) : "实时"}</time>
+                  <StatusBadge status={log.level === "error" ? "严重" : log.level === "warning" ? "警告" : "正常"} />
+                  <strong>{log.source}</strong>
+                  <span title={`${log.resource_type}/${log.resource_id}`}>{log.resource_id || log.resource_type || "-"}</span>
+                  <code title={log.message}>{log.message}</code>
+                </div>)}
+              </div>
+            )}
           </section>
         ) : null}
 
@@ -748,7 +850,7 @@ function deriveSlowRequests(traces: RequestTrace[] | undefined): SlowRow[] {
     .slice(0, 5)
     .map((trace) => ({
       endpoint: trace.endpoint_id || "/v1/chat/completions",
-      service: trace.target_pod || "llm-chat-service",
+      service: trace.target_pod || "未绑定实例",
       p95: `${fmt(trace.total_ms ?? trace.generation_ms ?? 0, 0)}ms`,
       ratio: "实时",
     }));
@@ -763,20 +865,35 @@ function deltaOf(series: number[]): { delta: string; deltaTone: "up" | "down" | 
   };
 }
 
-type LatLine = { id: string; label: string; tone: ObsTone; values: number[] };
+type LatLine = { id: string; label: string; tone: ObsTone; values: Array<number | null> };
 type LatencyLabel = { label: string; index: number };
 type TrendSlo = { value: number; label: string };
-type LatencyChartData = { title: string; unit: string; lines: LatLine[]; labels: LatencyLabel[]; slo: TrendSlo | null };
+type LatencyChartData = {
+  title: string;
+  unit: string;
+  lines: LatLine[];
+  labels: LatencyLabel[];
+  slo: TrendSlo | null;
+  sampleCount: number;
+  percentilesOverlap: boolean;
+};
 
 // 由 /api/metrics/history 派生当前筛选指标的趋势（旧→新）。
 function buildMetricChart(samples: MetricsHistorySample[], metric: ObsMetricFilter): LatencyChartData {
   const metricConfig = trendConfig(metric);
   const valid = [...samples].reverse().filter((s) => metricConfig.defs.some((d) => typeof d.sel(s.metrics) === "number"));
-  const num = (v: number | null | undefined) => (typeof v === "number" ? v : 0);
   const lines = metricConfig.defs
-    .map((d) => ({ id: d.id, label: d.label, tone: d.tone, values: valid.map((s) => num(d.sel(s.metrics))) }))
-    .filter((l) => l.values.length >= 2);
-  return { title: metricConfig.title, unit: metricConfig.unit, lines, labels: pickTimeLabels(valid), slo: metricConfig.slo };
+    .map((d) => ({ id: d.id, label: d.label, tone: d.tone, values: valid.map((s) => {
+      const value = d.sel(s.metrics);
+      return typeof value === "number" ? value : null;
+    }) }))
+    .filter((line) => line.values.filter((value) => value != null).length >= 2);
+  const percentilesOverlap = lines.length === 3 && valid.length > 0 && valid.every((_, index) => {
+    const values = lines.map((line) => line.values[index]).filter((value): value is number => value != null);
+    return values.length === 3 && values.every((value) => value === values[0]);
+  });
+  const sampleCount = Math.max(0, ...valid.map((sample) => sample.metrics.request_count ?? 0));
+  return { title: metricConfig.title, unit: metricConfig.unit, lines, labels: pickTimeLabels(valid), slo: metricConfig.slo, sampleCount, percentilesOverlap };
 }
 
 function trendConfig(metric: ObsMetricFilter): {
@@ -960,7 +1077,8 @@ function LatencyChart({ chart }: { chart: LatencyChartData }) {
   const RIGHT = 10;
   const plotW = W - LEFT - RIGHT;
   const pointCount = chart.lines[0]?.values.length ?? 1;
-  const maxRaw = Math.max(...chart.lines.flatMap((l) => l.values), chart.slo?.value ?? 0, 1);
+  const numericValues = chart.lines.flatMap((line) => line.values).filter((value): value is number => value != null);
+  const maxRaw = Math.max(...numericValues, chart.slo?.value ?? 0, 1);
   const max = niceCeil(maxRaw);
   const ticks = yTicks(max, 5);
   const yOf = (v: number) => TOP + H - (v / max) * H;
@@ -974,6 +1092,11 @@ function LatencyChart({ chart }: { chart: LatencyChartData }) {
         ))}
         {chart.slo ? <span className="neutral"><i />{chart.slo.label}</span> : null}
       </div>
+      {chart.percentilesOverlap ? (
+        <p className="obs-chart-notice">单个采样窗口最多 {chart.sampleCount} 个请求，P50、P95、P99 数值完全重合；图中使用不同线型区分。</p>
+      ) : chart.sampleCount > 0 && chart.sampleCount < 20 ? (
+        <p className="obs-chart-notice">单个采样窗口最多 {chart.sampleCount} 个请求，分位数仅供参考。</p>
+      ) : null}
       <svg aria-label={chart.title} role="img" viewBox="0 0 760 230">
         <text className="obs-axis-title" x="0" y="13">{chart.unit}</text>
         <g className="obs-chart-grid">
@@ -989,13 +1112,22 @@ function LatencyChart({ chart }: { chart: LatencyChartData }) {
         </g>
         <line className="obs-axis-line" x1={LEFT} x2={W - RIGHT} y1={TOP + H} y2={TOP + H} />
         {sloY != null ? <line className="obs-slo-line" x1={LEFT} x2={W - RIGHT} y1={sloY} y2={sloY} /> : null}
-        {chart.lines.map((line) => (
-          <polyline
-            className={`line-${line.tone}`}
-            fill="none"
-            key={line.id}
-            points={line.values.map((v, i) => `${xOf(i, line.values.length).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ")}
-          />
+        {[...chart.lines].reverse().map((line) => (
+          <g className={`series-${line.id}`} key={line.id}>
+            {lineSegments(line.values).map((segment, segmentIndex) => (
+              <polyline
+                className={`line-${line.tone}`}
+                fill="none"
+                key={`${line.id}-${segmentIndex}`}
+                points={segment.map(({ value, index }) => `${xOf(index, line.values.length).toFixed(1)},${yOf(value).toFixed(1)}`).join(" ")}
+              />
+            ))}
+            {line.values.map((value, index) => value == null ? null : (
+              <circle className={`point-${line.tone}`} cx={xOf(index, line.values.length)} cy={yOf(value)} key={`${line.id}-point-${index}`} r="2.5">
+                <title>{`${line.label}: ${fmt(value, chart.unit === "%" ? 2 : 0)}${chart.unit}`}</title>
+              </circle>
+            ))}
+          </g>
         ))}
         <g className="obs-x-axis">
           {chart.labels.map((item) => (
@@ -1005,6 +1137,21 @@ function LatencyChart({ chart }: { chart: LatencyChartData }) {
       </svg>
     </div>
   );
+}
+
+function lineSegments(values: Array<number | null>): Array<Array<{ value: number; index: number }>> {
+  const segments: Array<Array<{ value: number; index: number }>> = [];
+  let current: Array<{ value: number; index: number }> = [];
+  values.forEach((value, index) => {
+    if (value == null) {
+      if (current.length >= 2) segments.push(current);
+      current = [];
+      return;
+    }
+    current.push({ value, index });
+  });
+  if (current.length >= 2) segments.push(current);
+  return segments;
 }
 
 function formatAxisTick(value: number, max: number, unit: string): string {

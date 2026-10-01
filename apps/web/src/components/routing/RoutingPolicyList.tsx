@@ -14,7 +14,7 @@ export function RoutingPolicyList({ routing, onEdit }: { routing: Routing; onEdi
   if (list.isError) return <ErrorState error={list.error} onRetry={list.refetch} />;
   const policies = list.data?.policies ?? [];
   if (policies.length === 0) {
-    return <EmptyState title="暂无路由策略" description="点击「新建策略」配置多版本加权灰度（A/B）与可选影子流量" />;
+    return <EmptyState title="暂无模型或服务路由策略" description="点击「新建路由策略」，添加稳定版、灰度版等候选实例并设置分流权重" />;
   }
   return (
     <div className="routing-card-list">
@@ -27,6 +27,11 @@ function PolicyCard({ policy, routing, onEdit }: { policy: RoutingPolicy; routin
   const [open, setOpen] = useState(false);
   const liveByLabel = new Map<string, VariantStat>((policy.live ?? []).map((s) => [s.label, s]));
   const totalWeight = policy.variants.reduce((sum, v) => sum + v.weight, 0) || 1;
+  const hasModelVersions = policy.variants.some((variant) => Boolean(variant.model));
+  const releaseManaged = policy.metadata?.source === "model_release";
+  const aibrixManaged = releaseManaged && policy.metadata?.release_target === "aibrix";
+  const resourceTransition = policy.metadata?.resource_transition;
+  const rolloutPhase = policy.metadata?.rollout_phase === "full" ? "全量" : policy.metadata?.rollout_phase === "canary" ? "灰度" : "";
 
   return (
     <article className="routing-card">
@@ -34,7 +39,9 @@ function PolicyCard({ policy, routing, onEdit }: { policy: RoutingPolicy; routin
         <div>
           <strong>{policy.name}</strong>
           <StatusBadge status={policy.enabled ? "enabled" : "disabled"} />
-          {policy.shadow ? <span className="routing-shadow-tag">影子 → {policy.shadow.endpoint}</span> : null}
+          <span className="routing-policy-kind">{hasModelVersions ? "模型多版本" : "服务实例"}</span>
+          {releaseManaged ? <span className="routing-release-tag">发布中心同步{rolloutPhase ? ` · ${rolloutPhase}` : ""}</span> : null}
+          {policy.shadow ? <span className="routing-shadow-tag">影子流量 → {policy.shadow.endpoint}</span> : null}
           {policy.description ? <p className="cell-subtle">{policy.description}</p> : null}
         </div>
         <div className="routing-card-actions">
@@ -63,34 +70,40 @@ function PolicyCard({ policy, routing, onEdit }: { policy: RoutingPolicy; routin
       </header>
 
       <div className="routing-variants">
+        <div className="routing-variant header">
+          <span>候选版本 / 服务实例</span><span>配置权重与实时流量（近 1 小时）</span><span>发布操作</span>
+        </div>
         {policy.variants.map((v) => {
           const live = liveByLabel.get(v.label);
           const cfgShare = (v.weight / totalWeight) * 100;
           const liveShare = live ? live.share * 100 : 0;
+          const hasLive = Boolean(live && live.count > 0);
+          const alreadyFull = v.weight === totalWeight;
+          const needsResourceCleanup = Boolean(aibrixManaged && alreadyFull && resourceTransition?.cleanup_complete !== true);
           return (
             <div className="routing-variant" key={v.label}>
               <div className="routing-variant-meta">
-                <strong>{v.label}</strong>
-                <span className="cell-subtle">{v.endpoint}{v.model ? ` · ${v.model}` : ""}</span>
+                <strong>{v.label} <StatusBadge status={policy.endpoint_status?.[v.endpoint] || "unknown"} /></strong>
+                <span>{v.model || "继承请求模型"}</span>
+                <small>{v.endpoint}</small>
               </div>
               <div className="routing-share">
-                <div className="routing-share-bar" title={`配置权重 ${v.weight}`}>
-                  <i className="cfg" style={{ width: `${cfgShare}%` }} />
-                  <i className="live" style={{ width: `${liveShare}%` }} />
+                <div className="routing-share-line">
+                  <span>配置</span><div className="routing-share-bar"><i className="cfg" style={{ width: `${cfgShare}%` }} /></div><strong>{cfgShare.toFixed(0)}%</strong>
                 </div>
-                <span className="routing-share-nums">
-                  <em>权重 {v.weight}</em>
-                  <em className="cell-subtle">实测 {liveShare.toFixed(0)}%{live ? ` · p95 ${live.p95_ms}ms` : ""}</em>
-                </span>
+                <div className="routing-share-line">
+                  <span>实时</span><div className="routing-share-bar"><i className="live" style={{ width: `${liveShare}%` }} /></div><strong>{hasLive ? `${liveShare.toFixed(0)}%` : "暂无"}</strong>
+                </div>
+                <small className="routing-live-meta">权重 {v.weight}{hasLive && live ? ` · ${live.count} 请求 · P95 ${live.p95_ms}ms · 错误率 ${(live.error_rate * 100).toFixed(2)}%` : " · 暂无真实请求样本"}</small>
               </div>
               <button
                 className="link-btn"
                 type="button"
-                disabled={routing.promote.isPending || v.weight === totalWeight}
-                title="全量到该候选（其余置 0）"
+                disabled={routing.promote.isPending || (alreadyFull && !needsResourceCleanup)}
+                title={needsResourceCleanup ? "权重已全量，缩容零权重旧模型并释放 GPU" : "全量到该候选，然后回收旧稳定模型"}
                 onClick={() => routing.promote.mutate({ name: policy.name, label: v.label })}
               >
-                全量
+                {needsResourceCleanup ? "回收旧版本" : "切到全量"}
               </button>
             </div>
           );
@@ -98,7 +111,7 @@ function PolicyCard({ policy, routing, onEdit }: { policy: RoutingPolicy; routin
       </div>
 
       <button className="routing-cmp-toggle" type="button" onClick={() => setOpen((o) => !o)}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} A/B 对比（样本 / p95 / 错误率）
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />} 查看 A/B 与影子指标对比
       </button>
       {open && <ABComparison policyName={policy.name} />}
     </article>

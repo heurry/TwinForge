@@ -1,0 +1,9 @@
+# 分布式训练任务的目标命名空间。控制面写操作受 TRAINING_NAMESPACES 允许名单约束；
+# serving 命名空间（aibrix/envoy/vllm/qwen）经 guardNamespace 硬禁，训练永远碰不到。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: training
+  labels:
+    app.kubernetes.io/part-of: cloudnative-infra-platform
+    cnip.io/purpose: kubeflow-training

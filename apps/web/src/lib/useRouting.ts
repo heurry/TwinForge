@@ -54,8 +54,13 @@ export function useRouting() {
 
   const promote = useMutation({
     mutationFn: (vars: { name: string; label: string }) => promoteRoutingVariant(vars.name, vars.label),
-    onSuccess: (_res, vars) => {
-      toast.success(`已全量到 ${vars.label}`, { description: "其余候选权重已置 0；可一键回滚" });
+    onSuccess: (res, vars) => {
+      const transition = res.policy.metadata?.resource_transition;
+      if (transition?.cleanup_complete === false) {
+        toast.warning(`已全量到 ${vars.label}，但旧模型回收未完成`, { description: "可再次点击“回收旧版本”重试" });
+      } else {
+        toast.success(`已全量到 ${vars.label}`, { description: "旧稳定模型已缩容到 0 并释放 GPU；可一键回滚" });
+      }
       void invalidate();
     },
     onError: (e) => toast.error(`全量失败：${describeError(e)}`)
@@ -64,7 +69,7 @@ export function useRouting() {
   const rollback = useMutation({
     mutationFn: (name: string) => rollbackRoutingPolicy(name),
     onSuccess: () => {
-      toast.success("已回滚到全量前的权重");
+      toast.success("已回滚到全量前的权重", { description: "旧模型已预热并通过 AIBrix 探针，零权重候选已回收" });
       void invalidate();
     },
     onError: (e) => toast.error(`回滚失败：${describeError(e)}`)

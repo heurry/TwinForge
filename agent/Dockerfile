@@ -2,13 +2,12 @@
 
 # ---- build stage ----
 FROM golang:1.22-alpine AS build
-ARG GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://proxy.golang.org|https://goproxy.cn|direct
 ENV GOPROXY=${GOPROXY}
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY *.go ./
-# 容器内 go mod tidy 解析 client-go 依赖并生成 go.sum（宿主无 Go，故在此完成）。
-RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/infra-agent .
 
 # ---- runtime stage ----

@@ -10,6 +10,58 @@
   font-weight: 700;
 }
 
+.benchmark-runtime-state {
+  align-items: center;
+  border: 1px solid #cbd5e1;
+  color: #475569;
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.benchmark-runtime-state.ready { border-color: #86efac; color: #15803d; }
+.benchmark-runtime-state.starting { border-color: #fde68a; color: #a16207; }
+.benchmark-runtime-state.error,
+.benchmark-runtime-state.disabled { border-color: #fecaca; color: #b91c1c; }
+
+.benchmark-runtime-bar {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #dbe4ef;
+  display: flex;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 6px 10px;
+}
+
+.benchmark-runtime-copy,
+.benchmark-runtime-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.benchmark-runtime-copy > span:last-child {
+  color: #64748b;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.benchmark-runtime-profile {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  font-size: 12px;
+  height: 32px;
+  padding: 0 26px 0 9px;
+}
+
 /* 流程 ribbon */
 .benchmark-process-ribbon {
   display: grid;
@@ -59,7 +111,7 @@
 
 .infra-kpi-grid.benchmark-kpi-strip {
   gap: 10px;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 /* 主面板：tabs + toolbar + 表格 + 分页 */
@@ -136,7 +188,7 @@
   border-top: 1px solid #edf2f7;
   display: grid;
   gap: 6px;
-  grid-template-columns: minmax(140px, 1.35fr) minmax(88px, 0.82fr) minmax(82px, 0.78fr) 66px 66px 62px 54px 62px 54px 58px 72px 70px;
+  grid-template-columns: minmax(112px, 1.2fr) minmax(108px, 1fr) 78px 74px 48px 62px 54px 54px 72px 56px 56px 70px 70px;
   min-height: 42px;
   min-width: 0;
   padding: 6px 12px 6px 16px;
@@ -197,6 +249,28 @@
 .benchmark-pagination button { height: 28px; justify-content: center; min-width: 28px; padding: 0 9px; }
 .benchmark-pagination button.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
 
+.benchmark-toggle-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.benchmark-toggle-row label {
+  align-items: center;
+  border: 1px solid #d8e0eb;
+  border-radius: 6px;
+  color: #334155;
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+}
+.benchmark-toggle-row input { accent-color: #2563eb; }
+.benchmark-form-field { display: grid; gap: 4px; }
+.benchmark-form-field > span { color: #64748b; font-size: 11px; font-weight: 700; }
+.benchmark-form-field .drawer-input { margin: 0; width: 100%; }
+
 /* 底部：基准对比 + SLO 门禁 */
 .benchmark-bottom-grid {
   display: grid;
@@ -250,4 +324,52 @@
   .benchmark-process-ribbon { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .infra-kpi-grid.benchmark-kpi-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .benchmark-bottom-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 820px) {
+  .infra-platform-shell:has(.benchmarks-page) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 56px 46px minmax(0, 1fr);
+  }
+  .infra-platform-shell:has(.benchmarks-page) .infra-topbar {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1;
+    padding: 0 12px;
+  }
+  .infra-platform-shell:has(.benchmarks-page) .infra-global-search,
+  .infra-platform-shell:has(.benchmarks-page) .infra-topbar-actions {
+    display: none;
+  }
+  .infra-platform-shell:has(.benchmarks-page) .infra-sidebar {
+    grid-column: 1;
+    grid-row: 2;
+    overflow-x: auto;
+    padding: 6px 8px;
+  }
+  .infra-platform-shell:has(.benchmarks-page) .infra-nav {
+    display: flex;
+    gap: 4px;
+    min-width: max-content;
+  }
+  .infra-platform-shell:has(.benchmarks-page) .infra-nav-button {
+    flex: 0 0 auto;
+    width: auto;
+  }
+  .infra-platform-shell:has(.benchmarks-page) main.infra-main {
+    grid-column: 1;
+    grid-row: 3;
+    padding: 12px;
+  }
+  .benchmark-replica .console-page-header { align-items: flex-start; }
+  .benchmark-replica .console-refresh.primary { flex: 0 0 auto; white-space: nowrap; }
+  .benchmark-runtime-bar { align-items: stretch; flex-direction: column; gap: 8px; }
+  .benchmark-runtime-copy,
+  .benchmark-runtime-actions { justify-content: space-between; }
+  .benchmark-runtime-profile { flex: 1 1 auto; min-width: 0; }
+  .infra-kpi-grid.benchmark-kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .benchmark-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .benchmark-search-box { grid-column: 1 / -1; }
+  .benchmark-table { overflow-x: auto; }
+  .benchmark-table-row { min-width: 980px; }
 }

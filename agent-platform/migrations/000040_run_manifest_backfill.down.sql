@@ -1,0 +1,2 @@
+-- Backfill rows are retained; deleting them would remove the durable delivery
+-- projection for Runs created during the compatibility window.

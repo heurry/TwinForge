@@ -14,14 +14,24 @@ import { Fragment, type ReactNode } from "react";
  * Escapes raw HTML by virtue of building React nodes from strings.
  * No external dependency.
  */
-export function MarkdownText({ text }: { text: string }): JSX.Element {
+export function MarkdownText({ text, onLink }: { text: string; onLink?: (href: string) => boolean }): JSX.Element {
   if (!text) return <Fragment />;
-  const blocks = parseBlocks(text);
+  const safeText = sanitizeModelProtocol(text);
+  if (!safeText) return <Fragment />;
+  const blocks = parseBlocks(safeText);
   return (
     <div className="md-text">
-      {blocks.map((block, i) => renderBlock(block, i))}
+      {blocks.map((block, i) => renderBlock(block, i, onLink))}
     </div>
   );
+}
+
+// Never render legacy tool markup as user-facing Markdown. The backend rejects
+// it and retries, but this guard protects older runs and streamed responses.
+function sanitizeModelProtocol(input: string): string {
+  const lower = input.toLowerCase();
+  if (!lower.includes("<toolcall") && !lower.includes("<function=") && !lower.includes("<parameter=")) return input;
+  return "工具调用协议格式错误，系统正在重新请求模型。";
 }
 
 type Block =
@@ -29,6 +39,7 @@ type Block =
   | { kind: "heading"; level: number; text: string }
   | { kind: "ul"; items: string[] }
   | { kind: "ol"; items: string[] }
+  | { kind: "table"; headers: string[]; rows: string[][] }
   | { kind: "code"; lang: string; text: string };
 
 function parseBlocks(input: string): Block[] {
@@ -67,6 +78,19 @@ function parseBlocks(input: string): Block[] {
       continue;
     }
 
+    // GitHub-style table. The separator row is structural and is not shown.
+    if (i + 1 < lines.length && lines[i].includes("|") && isTableSeparator(lines[i + 1])) {
+      const headers = splitTableRow(lines[i]);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim() && lines[i].includes("|") && !isBlockStart(lines[i])) {
+        rows.push(splitTableRow(lines[i]));
+        i++;
+      }
+      blocks.push({ kind: "table", headers, rows });
+      continue;
+    }
+
     // Unordered list
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
@@ -102,6 +126,15 @@ function parseBlocks(input: string): Block[] {
   return blocks;
 }
 
+function splitTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function isTableSeparator(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
 function isBlockStart(line: string): boolean {
   return (
     /^```/.test(line) ||
@@ -111,7 +144,7 @@ function isBlockStart(line: string): boolean {
   );
 }
 
-function renderBlock(block: Block, key: number): JSX.Element {
+function renderBlock(block: Block, key: number, onLink?: (href: string) => boolean): JSX.Element {
   switch (block.kind) {
     case "code":
       return (
@@ -121,13 +154,13 @@ function renderBlock(block: Block, key: number): JSX.Element {
       );
     case "heading": {
       const Tag = (`h${Math.min(block.level + 2, 6)}` as keyof JSX.IntrinsicElements);
-      return <Tag className={`md-heading md-h${block.level}`} key={key}>{renderInline(block.text)}</Tag>;
+      return <Tag className={`md-heading md-h${block.level}`} key={key}>{renderInline(block.text, onLink)}</Tag>;
     }
     case "ul":
       return (
         <ul className="md-ul" key={key}>
           {block.items.map((it, idx) => (
-            <li key={idx}>{renderInline(it)}</li>
+            <li key={idx}>{renderInline(it, onLink)}</li>
           ))}
         </ul>
       );
@@ -135,12 +168,21 @@ function renderBlock(block: Block, key: number): JSX.Element {
       return (
         <ol className="md-ol" key={key}>
           {block.items.map((it, idx) => (
-            <li key={idx}>{renderInline(it)}</li>
+            <li key={idx}>{renderInline(it, onLink)}</li>
           ))}
         </ol>
       );
+    case "table":
+      return (
+        <div className="md-table-scroll" key={key}>
+          <table className="md-table">
+            <thead><tr>{block.headers.map((cell, index) => <th key={index}>{renderInline(cell, onLink)}</th>)}</tr></thead>
+            <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{block.headers.map((_, cellIndex) => <td key={cellIndex}>{renderInline(row[cellIndex] || "", onLink)}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+      );
     case "para":
-      return <p className="md-p" key={key}>{renderInline(block.text)}</p>;
+      return <p className="md-p" key={key}>{renderInline(block.text, onLink)}</p>;
   }
 }
 
@@ -148,12 +190,19 @@ function renderBlock(block: Block, key: number): JSX.Element {
  * Inline tokenizer. Walks the string and matches `**bold**`, `*italic*`,
  * `` `code` ``, and `~~strike~~`. Everything else stays as plain text.
  */
-function renderInline(text: string): ReactNode {
+function renderInline(text: string, onLink?: (href: string) => boolean): ReactNode {
   const tokens: ReactNode[] = [];
   let rest = text;
   let key = 0;
 
   const patterns: { regex: RegExp; render: (match: RegExpExecArray) => ReactNode }[] = [
+    { regex: /^\[([^\]]+)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/, render: (m) => {
+      const href = safeLink(m[2]);
+      if (!href) return <span key={key++}>{m[1]}</span>;
+      return <a className="md-link" href={href} key={key++} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer" onClick={(event) => {
+        if (onLink?.(href)) event.preventDefault();
+      }}>{m[1]}</a>;
+    } },
     { regex: /^`([^`]+)`/, render: (m) => <code className="md-inline-code" key={key++}>{m[1]}</code> },
     { regex: /^\*\*([^*]+)\*\*/, render: (m) => <strong key={key++}>{m[1]}</strong> },
     { regex: /^__([^_]+)__/, render: (m) => <strong key={key++}>{m[1]}</strong> },
@@ -175,11 +224,17 @@ function renderInline(text: string): ReactNode {
     }
     if (!matched) {
       // Eat a single char (or up to the next special). Keep batches as plain text.
-      const nextSpecial = rest.search(/[*_`~]/);
+      const nextSpecial = rest.search(/[\[*_`~]/);
       const chunkLen = nextSpecial === -1 ? rest.length : Math.max(1, nextSpecial);
       tokens.push(rest.slice(0, chunkLen));
       rest = rest.slice(chunkLen);
     }
   }
   return tokens;
+}
+
+function safeLink(value: string): string | undefined {
+  const href = value.trim();
+  if (/^(?:https?:|mailto:)/i.test(href) || /^(?:\/|\.\.?\/|#)/.test(href) || /^[\w@.+-][\w@.+/ -]*$/u.test(href)) return href;
+  return undefined;
 }

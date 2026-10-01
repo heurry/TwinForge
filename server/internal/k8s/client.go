@@ -9,6 +9,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -26,14 +27,15 @@ import (
 
 // 快照结构与 Agent / 前端 KubernetesPage 字段逐字对齐（json tag 不可改）。
 type PodSnapshot struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Phase     string `json:"phase"`
-	Ready     string `json:"ready"`
-	Restarts  int    `json:"restarts"`
-	PodIP     string `json:"pod_ip"`
-	Node      string `json:"node"`
-	Component string `json:"component"`
+	Namespace  string   `json:"namespace"`
+	Name       string   `json:"name"`
+	Phase      string   `json:"phase"`
+	Ready      string   `json:"ready"`
+	Restarts   int      `json:"restarts"`
+	PodIP      string   `json:"pod_ip"`
+	Node       string   `json:"node"`
+	Component  string   `json:"component"`
+	Containers []string `json:"containers"`
 }
 
 type DeploymentSnapshot struct {
@@ -57,10 +59,10 @@ type EventSnapshot struct {
 
 // NodeSnapshot：5B.1 新增（Agent/Java 此前不暴露节点）。
 type NodeSnapshot struct {
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Roles       string `json:"roles"`
-	Version     string `json:"version"`
+	Name             string `json:"name"`
+	Status           string `json:"status"`
+	Roles            string `json:"roles"`
+	Version          string `json:"version"`
 	InternalIP       string `json:"internal_ip"`
 	OSImage          string `json:"os_image"`
 	ContainerRuntime string `json:"container_runtime"`
@@ -192,6 +194,46 @@ func (c *Collector) ProxyGetPodMetrics(ctx context.Context, namespace, name, por
 		DoRaw(ctx)
 }
 
+type PodLogOptions struct {
+	TailLines  int64
+	Container  string
+	SinceTime  *time.Time
+	Previous   bool
+	Timestamps bool
+}
+
+// PodLogs 返回某 Pod 末 tailLines 行日志（兼容训练任务等旧调用）。
+func (c *Collector) PodLogs(ctx context.Context, namespace, name string, tailLines int64) (string, error) {
+	return c.PodLogsWithOptions(ctx, namespace, name, PodLogOptions{TailLines: tailLines})
+}
+
+// PodLogsWithOptions 支持多容器、时间窗口、时间戳和上一个容器实例。
+func (c *Collector) PodLogsWithOptions(ctx context.Context, namespace, name string, options PodLogOptions) (string, error) {
+	tailLines := options.TailLines
+	if tailLines <= 0 {
+		tailLines = 200
+	}
+	var sinceTime *metav1.Time
+	if options.SinceTime != nil {
+		value := metav1.NewTime(*options.SinceTime)
+		sinceTime = &value
+	}
+	stream, err := c.clientset.CoreV1().Pods(namespace).
+		GetLogs(name, &corev1.PodLogOptions{
+			TailLines: &tailLines, Container: options.Container, SinceTime: sinceTime,
+			Previous: options.Previous, Timestamps: options.Timestamps,
+		}).Stream(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+	b, err := io.ReadAll(stream)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 func (c *Collector) collectPods(ctx context.Context) ([]PodSnapshot, error) {
 	list, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -200,15 +242,20 @@ func (c *Collector) collectPods(ctx context.Context) ([]PodSnapshot, error) {
 	pods := make([]PodSnapshot, 0, len(list.Items))
 	for i := range list.Items {
 		p := &list.Items[i]
+		containers := make([]string, 0, len(p.Spec.Containers))
+		for _, container := range p.Spec.Containers {
+			containers = append(containers, container.Name)
+		}
 		pods = append(pods, PodSnapshot{
-			Namespace: p.Namespace,
-			Name:      p.Name,
-			Phase:     string(p.Status.Phase),
-			Ready:     readyString(p),
-			Restarts:  totalRestarts(p),
-			PodIP:     p.Status.PodIP,
-			Node:      p.Spec.NodeName,
-			Component: guessComponent(p),
+			Namespace:  p.Namespace,
+			Name:       p.Name,
+			Phase:      string(p.Status.Phase),
+			Ready:      readyString(p),
+			Restarts:   totalRestarts(p),
+			PodIP:      p.Status.PodIP,
+			Node:       p.Spec.NodeName,
+			Component:  guessComponent(p),
+			Containers: containers,
 		})
 	}
 	sort.Slice(pods, func(i, j int) bool {
@@ -278,10 +325,10 @@ func (c *Collector) collectNodes(ctx context.Context) ([]NodeSnapshot, error) {
 		n := &list.Items[i]
 		cap := n.Status.Capacity
 		out = append(out, NodeSnapshot{
-			Name:        n.Name,
-			Status:      nodeStatus(n),
-			Roles:       nodeRoles(n),
-			Version:     n.Status.NodeInfo.KubeletVersion,
+			Name:             n.Name,
+			Status:           nodeStatus(n),
+			Roles:            nodeRoles(n),
+			Version:          n.Status.NodeInfo.KubeletVersion,
 			InternalIP:       nodeInternalIP(n),
 			OSImage:          n.Status.NodeInfo.OSImage,
 			ContainerRuntime: n.Status.NodeInfo.ContainerRuntimeVersion,

@@ -1,0 +1,29 @@
+# REJECTED for the latency profile: repeated 1K/C8 tests regressed TTFT/TPOT
+# and the checkpoint has no calibrated KV scale. Retained for reproduction.
+# Keep the validated AWQ/Ring4 serving profile fixed so the A/B isolates
+# KV-cache storage and dequantization overhead.
+model: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+served_model_name: qwen36-27b-awq
+tensor_parallel_size: 2
+pipeline_parallel_size: 1
+dtype: float16
+max_model_len: 4096
+gpu_memory_utilization: 0.85
+max_num_seqs: 8
+max_num_batched_tokens: 4096
+kv_cache_dtype: fp8
+enable_prefix_caching: true
+enable_chunked_prefill: true
+disable_custom_all_reduce: true
+nccl_p2p_disable: 1
+nccl_shm_disable: 0
+nccl_algo: Ring
+nccl_min_nchannels: 4
+nccl_max_nchannels: 4
+language_model_only: true
+reasoning_parser: qwen3
+generation_config: vllm
+trust_remote_code: true
+host: 0.0.0.0
+port: 8021
+api_key: ""

@@ -1,0 +1,2 @@
+-- The manifest projection is intentionally retained on rollback; it is a
+-- derived audit snapshot and removing it would destroy replay information.

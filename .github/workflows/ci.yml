@@ -3,6 +3,7 @@ name: CI
 # Phase 5 / 5B.6：用真实 CI 取代"人工 finish 模拟"——每次 push/PR 自动
 # 构建+检查 Go 控制面 / Agent / 前端 / AI 服务，并校验 sqlc 生成与 Helm chart。
 on:
+  workflow_dispatch:
   push:
     branches: [main, "go-migration-*"]
   pull_request:

@@ -141,4 +141,12 @@ func (a *API) deployEvent(ctx context.Context, id string, meta map[string]any, p
 	meta["message"] = message
 	a.appendDeployEvent(meta, phase, message)
 	a.persistDeployMeta(ctx, id, meta)
+	level := "info"
+	if phase == "failed" || phase == "rolling_back" {
+		level = "error"
+	}
+	_ = a.recordPlatformLog(ctx, platformLogInput{
+		Level: level, Source: "deployment-runner", ResourceType: "deployment", ResourceID: id,
+		Message: message, Attributes: map[string]any{"phase": phase, "mode": meta["mode"]},
+	})
 }

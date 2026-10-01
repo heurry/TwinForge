@@ -72,6 +72,8 @@ type DiagnoseResult struct {
 	LatencyMs          *float64        `json:"latency_ms"`
 	Mode               string          `json:"mode"` // stub / live —— 便于排查无 GPU 时为何是假响应
 	Error              string          `json:"error"`
+	Category           string          `json:"category"`
+	Severity           string          `json:"severity"`
 }
 
 // Diagnose 调 Python 推理。任何网络/超时归 ErrUnreachable；非 2xx 归 ErrBadStatus；
@@ -106,6 +108,31 @@ func (c *Client) Diagnose(ctx context.Context, req DiagnoseRequest) (*DiagnoseRe
 		return nil, fmt.Errorf("%w: %v", ErrBadResponse, err)
 	}
 	return &out, nil
+}
+
+// Health 返回 AI 服务及其真实 LLM 上游状态，供控制台明确区分 live 与规则降级。
+func (c *Client) Health(ctx context.Context) (map[string]any, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/internal/health", nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadResponse, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%w: status %d", ErrBadStatus, resp.StatusCode)
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadResponse, err)
+	}
+	return out, nil
 }
 
 // EmbedRequest / EmbedResult 对齐 ai-service /internal/embed（5B.4c）。
@@ -165,7 +192,7 @@ type AgentToolSchema struct {
 
 // AgentStepRequest：当前对话 + 可用工具，问模型「下一步调哪个工具」或「给最终结论」。
 type AgentStepRequest struct {
-	Messages    []map[string]any  `json:"messages"`
+	Messages []map[string]any `json:"messages"`
 	// omitempty：最终结论那一步不带工具（nil 切片）；否则序列化成 "tools":null，
 	// 被 ai-service 的 Pydantic（List 非 Optional）判 422。省略后服务端用默认空列表。
 	Tools       []AgentToolSchema `json:"tools,omitempty"`

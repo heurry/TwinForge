@@ -84,8 +84,6 @@ func (a *API) createConfigItem(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	a.Store.Audit(r.Context(), operator, "operator", "config.create", "config_item", req.ConfigKey,
-		map[string]any{"env": env, "namespace": ns, "version": 1})
 	WriteJSON(w, http.StatusOK, map[string]any{"id": id, "config_key": req.ConfigKey, "active_version": 1})
 }
 
@@ -104,13 +102,11 @@ func (a *API) publishConfigVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	operator := a.actor(r, req.Operator)
 	reason := orDefault(req.ChangeReason, "更新配置")
-	next, configKey, err := a.Store.PublishConfigVersion(r.Context(), id, req.Content, reason, operator)
+	next, _, err := a.Store.PublishConfigVersion(r.Context(), id, req.Content, reason, operator)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	a.Store.Audit(r.Context(), operator, "operator", "config.publish", "config_item", configKey,
-		map[string]any{"version": next, "reason": reason})
 	WriteJSON(w, http.StatusOK, map[string]any{"id": id, "active_version": next})
 }
 
@@ -127,7 +123,7 @@ func (a *API) rollbackConfigVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operator := a.actor(r, req.Operator)
-	configKey, err := a.Store.RollbackConfigVersion(r.Context(), id, req.Version, operator)
+	_, err := a.Store.RollbackConfigVersion(r.Context(), id, req.Version, operator)
 	if err != nil {
 		if errors.Is(err, store.ErrVersionNotFound) {
 			a.badRequest(w, r, "version not found")
@@ -136,8 +132,6 @@ func (a *API) rollbackConfigVersion(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	a.Store.Audit(r.Context(), operator, "operator", "config.rollback", "config_item", configKey,
-		map[string]any{"rolled_back_to": req.Version})
 	WriteJSON(w, http.StatusOK, map[string]any{"id": id, "active_version": req.Version})
 }
 
@@ -246,14 +240,58 @@ func (a *API) rollbackDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operator := a.actor(r, req.Operator)
-	newID, key, err := a.Store.RollbackDeployment(r.Context(), id, operator)
+
+	// A recorded Kubernetes rollout carries enough immutable target metadata to
+	// perform a real rollback. Patch the workload back to previous_image and
+	// track the rollback as its own rollout instead of only changing DB status.
+	var key, version, env *string
+	var rawMeta []byte
+	if err := a.Pool.QueryRow(r.Context(), `SELECT deployment_key, version, env, metadata
+		FROM deployments WHERE id=$1::uuid`, id).Scan(&key, &version, &env, &rawMeta); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	originalMeta := map[string]any{}
+	_ = json.Unmarshal(rawMeta, &originalMeta)
+	if stringValue(originalMeta["mode"]) == "k8s_rollout" {
+		namespace := stringValue(originalMeta["target_namespace"])
+		name := stringValue(originalMeta["target_name"])
+		previousImage := stringValue(originalMeta["previous_image"])
+		if namespace == "" || name == "" || previousImage == "" {
+			WriteError(w, r, http.StatusConflict, "rollback_target_missing", "deployment does not contain a previous Kubernetes image")
+			return
+		}
+		if !a.k8sWriteGuard(w, r, namespace, name) {
+			return
+		}
+		meta := map[string]any{
+			"owner": operator, "mode": "k8s_rollout", "phase": "queued", "rollback_of": id,
+			"target_namespace": namespace, "target_name": name, "image": previousImage,
+			"rollback_from_image": originalMeta["image"],
+		}
+		newID, err := a.Store.CreateDeploymentMeta(r.Context(), derefOr(key, ""), derefOr(version, ""), derefOr(env, ""), meta)
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		if _, err := a.Pool.Exec(r.Context(), `UPDATE deployments SET status='rolled_back', finished_at=now() WHERE id=$1::uuid`, id); err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		a.Store.Audit(r.Context(), operator, "operator", "deployment.rollback", "deployment", derefOr(key, ""),
+			map[string]any{"from": id, "to_image": previousImage, "rollback_deployment_id": newID, "mode": "k8s_rollout"})
+		go a.runDeploymentRollout(newID, rolloutTarget{Namespace: namespace, Name: name, Image: previousImage, Operator: operator}, meta)
+		WriteJSON(w, http.StatusAccepted, map[string]any{"id": newID, "name": derefOr(key, ""), "status": "running", "rollback_of": id, "mode": "k8s_rollout", "image": previousImage})
+		return
+	}
+	newID, rollbackKey, err := a.Store.RollbackDeployment(r.Context(), id, operator)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	a.Store.Audit(r.Context(), operator, "operator", "deployment.rollback", "deployment", key,
+	a.Store.Audit(r.Context(), operator, "operator", "deployment.rollback", "deployment", rollbackKey,
 		map[string]any{"from": id})
-	WriteJSON(w, http.StatusOK, map[string]any{"id": newID, "name": key, "status": "running", "rollback_of": id})
+	WriteJSON(w, http.StatusOK, map[string]any{"id": newID, "name": rollbackKey, "status": "running", "rollback_of": id})
 }
 
 // ===== 故障事件 /api/incidents =====
@@ -349,25 +387,6 @@ func (a *API) auditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"events": mapSlice(rows, toAuditEventDTO)})
-}
-
-// ===== service-instance healthcheck =====
-
-func (a *API) serviceInstanceHealthcheck(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	ok, err := a.Store.ServiceInstanceHealthcheck(r.Context(), name)
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	status := "missing"
-	if ok {
-		status = "unknown"
-	}
-	WriteJSON(w, http.StatusOK, map[string]any{
-		"name": name, "status": status,
-		"detail": "healthcheck not yet implemented in Go control plane",
-	})
 }
 
 func (a *API) badRequest(w http.ResponseWriter, r *http.Request, msg string) {

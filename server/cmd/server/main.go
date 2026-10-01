@@ -26,6 +26,7 @@ import (
 	"github.com/heurry/cloudnative-infra-platform/server/internal/obs"
 	"github.com/heurry/cloudnative-infra-platform/server/internal/serving"
 	"github.com/heurry/cloudnative-infra-platform/server/internal/store"
+	"github.com/heurry/cloudnative-infra-platform/server/internal/training"
 )
 
 func main() {
@@ -80,6 +81,13 @@ func main() {
 		k8sErrStr = k8sErr.Error()
 	} else {
 		slog.Info("kubernetes collector ready")
+		if cfg.AllowK8sWrites {
+			if err := k8sCollector.EnsureAIBrixGatewayService(ctx); err != nil {
+				slog.Warn("stable AIBrix NodePort unavailable (serving degraded)", "err", err)
+			} else {
+				slog.Info("stable AIBrix NodePort ready", "endpoint", cfg.AIBrixGatewayBaseURL)
+			}
+		}
 	}
 
 	// 3.6) Phase 5/Option A：vLLM Prometheus 指标抓取器（需 k8s collector；否则 nil→serving 指标走旧路径）。
@@ -102,34 +110,62 @@ func main() {
 		PresignTTL: cfg.S3PresignTTL,
 	})
 
+	// 3.8) Phase F/F1：Kubeflow 训练客户端（PyTorchJob via dynamic client）。
+	// kubeconfig 加载失败时降级为 nil；CRD 未装时调用返回 error，均不阻塞启动。
+	trainingClient, trainingErr := training.NewClient(cfg.KubeconfigPath)
+	trainingErrStr := ""
+	if trainingErr != nil {
+		slog.Warn("training client unavailable (degraded)", "err", trainingErr)
+		trainingErrStr = trainingErr.Error()
+	} else {
+		slog.Info("training client ready")
+	}
+
 	// 4) HTTP。
 	st := store.New(pool)
 	apiSvc := &httpx.API{
-		Pool:           pool,
-		Agent:          agentcli.New(cfg.AgentBaseURL),
-		Metrics:        metrics.NewService(pool),
-		Store:          st,
-		AI:             aiclient.New(cfg.AIServiceBaseURL, cfg.AIRequestTimeout),
-		AIProxy:        aiProxy,
-		K8s:                k8sCollector,
-		K8sErr:             k8sErrStr,
-		AllowK8sWrites:     cfg.AllowK8sWrites,
-		K8sWriteNamespaces: cfg.K8sWriteNamespaces,
-		Serving:            servingScraper,
-		Cadvisor:       metrics.NewCadvisorCollector(cfg.CadvisorURL),
-		CORSOrigins:    cfg.CORSOrigins,
-		Cache:          cacheClient,
-		CacheTTL:       cfg.CacheTTL,
-		IdempotencyTTL: cfg.IdempotencyTTL,
-		RateLimitRPS:   cfg.RateLimitRPS,
-		RateLimitBurst: cfg.RateLimitBurst,
-		Blob:           blobStore,
-		StorageArchiveEnabled: cfg.StorageArchiveEnabled,
-		AuthEnabled:           cfg.AuthEnabled,
-		Auth:                  auth.NewIssuer(cfg.AuthJWTSecret, cfg.AuthTokenTTL),
-		Users:                 auth.ParseUsers(cfg.AuthUsers),
-		RoutingShadowEnabled:  cfg.RoutingShadowEnabled,
-		RAGRerankFeedback:     cfg.RAGRerankFeedback,
+		Pool:                   pool,
+		Agent:                  agentcli.New(cfg.AgentBaseURL),
+		Metrics:                metrics.NewService(pool),
+		Store:                  st,
+		AI:                     aiclient.New(cfg.AIServiceBaseURL, cfg.AIRequestTimeout),
+		AIProxy:                aiProxy,
+		K8s:                    k8sCollector,
+		K8sErr:                 k8sErrStr,
+		AIBrixGatewayBaseURL:   cfg.AIBrixGatewayBaseURL,
+		AllowK8sWrites:         cfg.AllowK8sWrites,
+		K8sWriteNamespaces:     cfg.K8sWriteNamespaces,
+		Training:               trainingClient,
+		TrainingErr:            trainingErrStr,
+		AllowTraining:          cfg.AllowTraining,
+		TrainingNamespaces:     cfg.TrainingNamespaces,
+		TrainingHostPath:       cfg.TrainingHostPath,
+		TrainingMountPath:      cfg.TrainingMountPath,
+		TrainingArtifactSecret: cfg.TrainingArtifactSecret,
+		TrainingOutputRoot:     cfg.TrainingOutputRoot,
+		Serving:                servingScraper,
+		Cadvisor:               metrics.NewCadvisorCollector(cfg.CadvisorURL),
+		CORSOrigins:            cfg.CORSOrigins,
+		Cache:                  cacheClient,
+		CacheTTL:               cfg.CacheTTL,
+		IdempotencyTTL:         cfg.IdempotencyTTL,
+		RateLimitRPS:           cfg.RateLimitRPS,
+		RateLimitBurst:         cfg.RateLimitBurst,
+		Blob:                   blobStore,
+		StorageArchiveEnabled:  cfg.StorageArchiveEnabled,
+		AuthEnabled:            cfg.AuthEnabled,
+		Auth:                   auth.NewIssuer(cfg.AuthJWTSecret, cfg.AuthTokenTTL),
+		Users:                  auth.ParseUsers(cfg.AuthUsers),
+		RoutingShadowEnabled:   cfg.RoutingShadowEnabled,
+		RAGRerankFeedback:      cfg.RAGRerankFeedback,
+		CIProvider:             cfg.CIProvider,
+		GitLabBaseURL:          cfg.GitLabBaseURL,
+		GitLabProjectID:        cfg.GitLabProjectID,
+		GitLabToken:            cfg.GitLabToken,
+		GitLabRef:              cfg.GitLabRef,
+		GitHubRepository:       cfg.GitHubRepository,
+		GitHubToken:            cfg.GitHubToken,
+		GitHubWorkflow:         cfg.GitHubWorkflow,
 	}
 	if cfg.AuthEnabled {
 		slog.Info("auth enabled (RBAC)", "users", len(apiSvc.Users))
@@ -140,9 +176,11 @@ func main() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 	go runRegistryReaper(bgCtx, st, cfg.RegistrySweep, cfg.RegistryTTL.Seconds())
+	go apiSvc.RunInferenceServingReconciler(bgCtx, 30*time.Second)
 	if servingScraper != nil {
 		go runServingScraper(bgCtx, servingScraper, cfg.ServingScrape)
 	}
+	go runMetricsSampler(bgCtx, apiSvc.Metrics, servingScraper, 15*time.Second)
 	// C2：周期自动归档（opt-in；手动 POST /api/storage/archive 始终可用）。
 	if cfg.StorageArchiveEnabled {
 		slog.Info("storage archiver enabled", "sweep", cfg.ArchiveSweep)
@@ -177,6 +215,38 @@ func main() {
 		slog.Warn("otel shutdown (flush) failed", "err", err)
 	}
 	slog.Info("server stopped")
+}
+
+// runMetricsSampler 将指标采样与 GET /metrics/current 解耦，避免页面轮询制造历史数据。
+// 空窗口不落库；没有请求时图表显示数据空档，而不是伪造 0 延迟。
+func runMetricsSampler(ctx context.Context, svc *metrics.Service, scraper *serving.Scraper, interval time.Duration) {
+	collect := func() {
+		m, err := svc.Current(ctx)
+		if err != nil {
+			slog.Warn("metrics sample failed", "err", err)
+			return
+		}
+		if scraper != nil {
+			for key, value := range scraper.Snapshot() {
+				m[key] = value
+			}
+		}
+		requestCount, _ := m["request_count"].(int)
+		if requestCount > 0 {
+			svc.PersistSample(ctx, "sampler", m)
+		}
+	}
+	collect()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			collect()
+		}
+	}
 }
 
 // runRegistryReaper 周期清扫：把超 TTL 未心跳的服务实例置 unreachable，并 best-effort 落审计。

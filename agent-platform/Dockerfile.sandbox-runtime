@@ -1,0 +1,13 @@
+ARG BUILD_IMAGE=twinforge-agent-platform-build:latest
+
+FROM ${BUILD_IMAGE} AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 /usr/local/go/bin/go build -o /out/agent-sandbox ./cmd/agent-sandbox && \
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o /out/agent-dependency-installer ./cmd/agent-dependency-installer
+
+FROM python:3.11-slim
+WORKDIR /app
+RUN python3 -m pip install --no-cache-dir --only-binary=:all: pygame==2.6.1
+COPY --from=build /out/agent-sandbox /out/agent-dependency-installer /app/
+ENTRYPOINT ["/app/agent-sandbox"]

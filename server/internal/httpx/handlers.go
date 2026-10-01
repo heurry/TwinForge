@@ -18,26 +18,28 @@ import (
 	"github.com/heurry/cloudnative-infra-platform/server/internal/metrics"
 	"github.com/heurry/cloudnative-infra-platform/server/internal/serving"
 	"github.com/heurry/cloudnative-infra-platform/server/internal/store"
+	"github.com/heurry/cloudnative-infra-platform/server/internal/training"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // API 持有各 handler 依赖（DB 连接池 / agent 客户端 / 指标服务 / 领域 store /
 // AI 服务客户端 + 反向代理 / k8s 直读 collector）。
 type API struct {
-	Pool        *pgxpool.Pool
-	Agent       *agentcli.Client
-	Metrics     *metrics.Service
-	Store       *store.Store
-	AI          *aiclient.Client // Phase 3：调 Python /internal/diagnose + /internal/embed
-	AIProxy     *Proxy           // Phase 3：SSE 透传到 AI 服务（chat:stream）
-	K8s         *k8s.Collector   // Phase 5 / 5B.1：控制面 client-go 直读集群（nil=未配置）
-	K8sErr      string           // collector 初始化错误（降级展示用）
+	Pool                 *pgxpool.Pool
+	Agent                *agentcli.Client
+	Metrics              *metrics.Service
+	Store                *store.Store
+	AI                   *aiclient.Client // Phase 3：调 Python /internal/diagnose + /internal/embed
+	AIProxy              *Proxy           // Phase 3：SSE 透传到 AI 服务（chat:stream）
+	K8s                  *k8s.Collector   // Phase 5 / 5B.1：控制面 client-go 直读集群（nil=未配置）
+	K8sErr               string           // collector 初始化错误（降级展示用）
+	AIBrixGatewayBaseURL string           // Compose/minikube 内稳定的 AIBrix 数据面入口
 	// A2：K8s 写权限（弹性扩缩容真配）。默认关闭；开启时仍受命名空间允许名单约束。
 	AllowK8sWrites     bool
 	K8sWriteNamespaces []string
-	Serving     *serving.Scraper // Phase 5 / Option A：vLLM Prometheus 指标抓取器（nil=未启用）
-	Cadvisor    *metrics.CadvisorCollector
-	CORSOrigins []string
+	Serving            *serving.Scraper // Phase 5 / Option A：vLLM Prometheus 指标抓取器（nil=未启用）
+	Cadvisor           *metrics.CadvisorCollector
+	CORSOrigins        []string
 	// 5B.4a：Redis 横切（缓存 / 限流 / 幂等）。Cache 为 nil 或禁用时全降级。
 	Cache          *cache.Client
 	CacheTTL       time.Duration
@@ -57,6 +59,24 @@ type API struct {
 	RoutingShadowEnabled bool
 	// E2：在线反馈重排开关（默认关；开启后 chat 检索按反馈净分微调候选排序）。
 	RAGRerankFeedback bool
+	// Phase F：Kubeflow 分布式训练（PyTorchJob via dynamic client；nil=未配置/集群不可达）。
+	// F2 接入 job 生命周期；写受 AllowTraining + TrainingNamespaces + guardNamespace（serving 硬禁）约束。
+	Training               *training.Client
+	TrainingErr            string
+	AllowTraining          bool
+	TrainingNamespaces     []string
+	TrainingHostPath       string
+	TrainingMountPath      string
+	TrainingArtifactSecret string
+	TrainingOutputRoot     string
+	CIProvider             string
+	GitLabBaseURL          string
+	GitLabProjectID        string
+	GitLabToken            string
+	GitLabRef              string
+	GitHubRepository       string
+	GitHubToken            string
+	GitHubWorkflow         string
 }
 
 // ---- GET /api/service-instances（复刻 ServiceInstanceController.listServiceInstances） ----
@@ -198,13 +218,17 @@ func (a *API) metricsCurrent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	a.Metrics.PersistSample(ctx, "api", m) // best-effort 落采样（含真实 serving 指标→history 也变真）
 	WriteJSON(w, http.StatusOK, m)
 }
 
 func (a *API) metricsHistory(w http.ResponseWriter, r *http.Request) {
 	limit := clamp(queryInt(r, "limit", 200), 1, 2000)
-	h, err := a.Metrics.History(r.Context(), limit)
+	minutes := clamp(queryInt(r, "minutes", 0), 0, 24*60)
+	var since time.Time
+	if minutes > 0 {
+		since = time.Now().Add(-time.Duration(minutes) * time.Minute)
+	}
+	h, err := a.Metrics.HistorySince(r.Context(), since, limit)
 	if err != nil {
 		a.fail(w, r, err)
 		return

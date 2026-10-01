@@ -1,0 +1,22 @@
+# Conservative dual-RTX-3090 baseline. Validate startup before raising concurrency.
+model: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-FP8
+served_model_name: qwen36-27b-fp8
+tensor_parallel_size: 2
+pipeline_parallel_size: 1
+dtype: auto
+quantization: fp8
+max_model_len: 4096
+gpu_memory_utilization: 0.90
+max_num_seqs: 8
+max_num_batched_tokens: 4096
+enable_prefix_caching: false
+# Qwen3.6 hybrid GDN/attention requires this in vLLM 0.19.1.
+enable_chunked_prefill: true
+disable_custom_all_reduce: true
+language_model_only: true
+reasoning_parser: qwen3
+generation_config: vllm
+trust_remote_code: true
+host: 0.0.0.0
+port: 8020
+api_key: ""

@@ -92,8 +92,8 @@ export function KnowledgePage() {
   return (
     <section className="infra-page knowledge-replica">
       <PageHeader
-        title="知识库 / RAG"
-        subtitle="文档管理、向量检索与证据溯源"
+        title="诊断知识库"
+        subtitle="分层管理配置、模型、日志和历史事件，为 AIOps 提供 RAG 检索与证据溯源"
         actions={
           <>
             <button className="console-refresh" type="button" disabled={rebuildMutation.isPending} onClick={() => rebuildMutation.mutate()}>

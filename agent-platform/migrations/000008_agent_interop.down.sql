@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS agent_platform.a2a_tasks;
+DROP TABLE IF EXISTS agent_platform.mcp_connection_health;
+DROP TABLE IF EXISTS agent_platform.mcp_tool_snapshots;
+DROP TABLE IF EXISTS agent_platform.mcp_server_versions;
+DROP TABLE IF EXISTS agent_platform.mcp_server_definitions;
+DROP TABLE IF EXISTS agent_platform.agent_delegations;
+DROP INDEX IF EXISTS agent_platform.idx_agent_runs_parent;
+ALTER TABLE agent_platform.agent_runs DROP COLUMN IF EXISTS delegation_depth, DROP COLUMN IF EXISTS delegation_id, DROP COLUMN IF EXISTS root_run_id, DROP COLUMN IF EXISTS parent_run_id;
+DROP TABLE IF EXISTS agent_platform.agent_tool_approvals;
+DROP TABLE IF EXISTS agent_platform.agent_artifacts;

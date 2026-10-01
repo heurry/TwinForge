@@ -95,7 +95,7 @@
 
 .infra-kpi-grid.k8s-kpi-strip {
   gap: 10px;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .k8s-replica .infra-kpi-card {
@@ -108,18 +108,12 @@
   white-space: nowrap;
 }
 
-.k8s-top-grid {
-  align-items: start;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.95fr);
-}
-
 .k8s-resource-grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   min-height: 88px;
+  margin-bottom: 12px;
 }
 
 .k8s-resource-meter {
@@ -163,6 +157,7 @@
 
 .k8s-node-table,
 .k8s-workload-table,
+.k8s-pod-table,
 .k8s-event-table {
   border: 1px solid #e6edf6;
   border-radius: 8px;
@@ -174,14 +169,27 @@
   min-width: 0;
 }
 
+.k8s-workload-table,
+.k8s-pod-table {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.k8s-workload-row.header,
+.k8s-pod-row.header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
 .k8s-node-row {
   align-items: center;
   border-top: 1px solid #edf2f7;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(98px, 1fr) 64px 44px 44px 48px 42px;
-  min-height: 31px;
-  padding: 5px 8px;
+  grid-template-columns: minmax(150px, 1.2fr) 70px minmax(130px, 1fr) 76px 76px 54px 54px;
+  min-height: 42px;
+  padding: 6px 10px;
 }
 
 .k8s-node-row:first-child {
@@ -204,10 +212,17 @@
   white-space: nowrap;
 }
 
+.k8s-node-identity,
+.k8s-node-platform { display: grid; gap: 2px; }
+.k8s-node-identity strong,
+.k8s-node-platform strong { color: #0f172a; }
+.k8s-node-identity small,
+.k8s-node-platform small { color: #94a3b8; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+
 .k8s-mid-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.9fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
 }
 
 .k8s-filter-row {
@@ -264,7 +279,7 @@
   border-top: 1px solid #edf2f7;
   display: grid;
   gap: 5px;
-  grid-template-columns: minmax(120px, 1fr) 66px 50px 52px 42px 48px 52px 26px;
+  grid-template-columns: minmax(145px, 1.25fr) 84px 62px 54px minmax(105px, 0.9fr) 54px 26px;
   min-height: 31px;
   padding: 4px 8px;
 }
@@ -288,6 +303,10 @@
   min-width: 0;
 }
 
+.k8s-workload-name > span { display: grid; gap: 1px; }
+.k8s-workload-name small { color: #94a3b8; font-size: 9.5px; }
+.k8s-hpa-summary { color: #475569; font-size: 10.5px !important; }
+
 .k8s-workload-row span,
 .k8s-workload-row strong {
   font-size: 12px;
@@ -309,6 +328,23 @@
   justify-content: center;
   width: 24px;
 }
+
+.k8s-pod-row {
+  align-items: center;
+  border-top: 1px solid #edf2f7;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(130px, 1.2fr) 78px 75px 42px 60px 38px 80px;
+  min-height: 36px;
+  padding: 5px 8px;
+}
+.k8s-pod-row:first-child { border-top: 0; }
+.k8s-pod-row.header { background: #f8fafc; color: #64748b; font-size: 11px; font-weight: 700; }
+.k8s-pod-row > span,
+.k8s-pod-row > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.k8s-pod-name { display: grid; gap: 1px; }
+.k8s-pod-name strong { color: #2563eb; overflow: hidden; text-overflow: ellipsis; }
+.k8s-pod-name small { color: #94a3b8; font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; }
 
 .k8s-event-tabs {
   display: flex;
@@ -455,19 +491,19 @@
   font-size: 12px;
 }
 
-@media (max-width: 1500px) {
+@media (max-width: 1280px) {
   .k8s-process-ribbon,
   .infra-kpi-grid.k8s-kpi-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .k8s-top-grid,
   .k8s-mid-grid,
   .k8s-bottom-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .k8s-workload-panel,
+  .k8s-pod-panel,
   .k8s-event-panel {
     overflow-x: auto;
   }
@@ -479,6 +515,8 @@
   .k8s-event-table {
     min-width: 680px;
   }
+
+  .k8s-pod-table { min-width: 620px; overflow-x: auto; }
 }
 
 /* 5B.3：HPA 弹性伸缩面板表格 */

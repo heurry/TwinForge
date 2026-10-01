@@ -22,7 +22,8 @@ _QUERY_INSTRUCT = "Instruct: Given a support question, retrieve relevant knowled
 
 
 def _force_stub(cfg: Config) -> bool:
-    return cfg.stub_mode == "on" or (cfg.stub_mode != "off" and not cfg.llm_base_url)
+    base_url = cfg.embed_base_url or cfg.llm_base_url
+    return cfg.stub_mode == "on" or (cfg.stub_mode != "off" and not base_url)
 
 
 def _stub_vector(text: str, dim: int) -> List[float]:
@@ -38,11 +39,12 @@ def _stub_vector(text: str, dim: int) -> List[float]:
 
 
 def _live_embed(texts: List[str], is_query: bool, cfg: Config) -> List[List[float]]:
-    url = normalize_base_url(cfg.llm_base_url) + "/embeddings"
+    url = normalize_base_url(cfg.embed_base_url or cfg.llm_base_url) + "/embeddings"
     inputs = [(_QUERY_INSTRUCT + t) for t in texts] if is_query else list(texts)
     headers = {"Content-Type": "application/json"}
-    if cfg.llm_api_key and cfg.llm_api_key != "EMPTY":
-        headers["Authorization"] = f"Bearer {cfg.llm_api_key}"
+    embed_api_key = cfg.embed_api_key or cfg.llm_api_key
+    if embed_api_key and embed_api_key != "EMPTY":
+        headers["Authorization"] = f"Bearer {embed_api_key}"
     resp = requests.post(
         url, headers=headers,
         json={"model": cfg.embed_model, "input": inputs},
@@ -63,4 +65,6 @@ def embed_texts(texts: List[str], is_query: bool, cfg: Config) -> Tuple[List[Lis
     try:
         return _live_embed(texts, is_query, cfg), "live"
     except Exception:
+        if cfg.stub_mode == "off":
+            raise
         return [_stub_vector(t, cfg.embed_dim) for t in texts], "stub"

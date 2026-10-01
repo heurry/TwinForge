@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/heurry/cloudnative-infra-platform/server/internal/obs"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -44,6 +48,7 @@ type instanceRow struct {
 
 // resolvedEndpoint 是选路后用于反代的目标。
 type resolvedEndpoint struct {
+	EndpointID      string
 	BaseURL         string
 	ModelID         string
 	TargetPod       string // x-target-pod
@@ -51,6 +56,7 @@ type resolvedEndpoint struct {
 }
 
 func (a *API) proxyChatCompletions(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	endpointID := chi.URLParam(r, "endpoint_id")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 	if err != nil {
@@ -65,14 +71,26 @@ func (a *API) proxyChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	ep, status, err := a.resolveEndpoint(r.Context(), endpointID)
 	if err != nil {
+		go a.recordRequestTrace(requestTraceInput{
+			RequestID: requestIDFor(r), EndpointID: endpointID, ModelID: payloadString(payload, "model"),
+			TotalMs: msSince(started), Status: "error", Error: err.Error(), Metadata: map[string]any{"plane": "proxy"},
+		})
 		WriteError(w, r, status, errCodeForStatus(status), err.Error())
 		return
 	}
 
 	payloadModel, _ := payload["model"].(string)
 	// 流式与非流式统一处理：无整体超时（SSE 长连），靠请求 context 取消。
-	resp, err := dispatchUpstream(r.Context(), ep, body, requestIDFor(r), r.Header.Get("Authorization"), payloadModel)
+	// The endpoint binding is authoritative for the served model. Do not pass
+	// the caller's stale alias as an override; routing variants explicitly use
+	// dispatchUpstream's override parameter when they need one.
+	resp, err := dispatchUpstream(r.Context(), ep, body, requestIDFor(r), r.Header.Get("Authorization"), "")
 	if err != nil {
+		obs.RecordServiceEdge(endpointID, "endpoint", ep.TargetPod, "serving", true)
+		go a.recordRequestTrace(requestTraceInput{
+			RequestID: requestIDFor(r), EndpointID: endpointID, TargetPod: ep.TargetPod, ModelID: modelFor("", payloadModel),
+			TotalMs: msSince(started), Status: "error", Error: err.Error(), Metadata: map[string]any{"plane": "proxy"},
+		})
 		WriteError(w, r, http.StatusBadGateway, "upstream_unreachable", "upstream endpoint unreachable: "+err.Error())
 		return
 	}
@@ -86,7 +104,24 @@ func (a *API) proxyChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("x-target-pod", ep.TargetPod)
 	w.Header().Set("x-routing-endpoint", endpointID)
 	w.WriteHeader(resp.StatusCode)
-	streamCopy(w, resp)
+	written := streamCopy(w, resp)
+	obs.RecordServiceEdge(endpointID, "endpoint", ep.TargetPod, "serving", resp.StatusCode < 200 || resp.StatusCode >= 400)
+	traceStatus := "ok"
+	traceError := ""
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		traceStatus = "error"
+		traceError = http.StatusText(resp.StatusCode)
+	}
+	go a.recordRequestTrace(requestTraceInput{
+		RequestID: requestIDFor(r), EndpointID: endpointID, TargetPod: ep.TargetPod,
+		ModelID: modelFor(ep.ModelID, payloadModel), TotalMs: msSince(started), Status: traceStatus, Error: traceError,
+		Metadata: map[string]any{"plane": "proxy", "http_status": resp.StatusCode, "response_bytes": written},
+	})
+}
+
+func payloadString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
 }
 
 // requestIDFor 取入站 x-request-id，缺失时回退到 RequestID 中间件生成的值。
@@ -101,8 +136,25 @@ func requestIDFor(r *http.Request) string {
 // modelOverride 非空时覆盖上游 model 头（候选/影子的版本灰度）；为空则用 ep.ModelID。
 // 调用方负责关闭返回响应的 Body。
 func dispatchUpstream(ctx context.Context, ep *resolvedEndpoint, body []byte, reqID, authz, modelOverride string) (*http.Response, error) {
-	upstream := normalizeBaseURL(ep.BaseURL) + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream, bytes.NewReader(body))
+	upstream := upstreamBaseURL(ep.BaseURL) + "/chat/completions"
+	model := ep.ModelID
+	if modelOverride != "" {
+		model = modelOverride
+	}
+	// The endpoint is the source of truth for the served model. Older seeded
+	// aliases (for example qwen3-4b-platform) can otherwise be forwarded to a
+	// gateway currently serving qwen3-4b-customer and fail with model_not_found.
+	forwardBody := body
+	if model != "" {
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err == nil {
+			payload["model"] = model
+			if encoded, err := json.Marshal(payload); err == nil {
+				forwardBody = encoded
+			}
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream, bytes.NewReader(forwardBody))
 	if err != nil {
 		return nil, err
 	}
@@ -112,10 +164,6 @@ func dispatchUpstream(ctx context.Context, ep *resolvedEndpoint, body []byte, re
 		req.Header.Set("Authorization", authz)
 	} else {
 		req.Header.Set("Authorization", "Bearer EMPTY")
-	}
-	model := ep.ModelID
-	if modelOverride != "" {
-		model = modelOverride
 	}
 	req.Header.Set("model", model)
 	if ep.RoutingStrategy != "" {
@@ -226,7 +274,7 @@ func (a *API) selectAuto(ctx context.Context, router *instanceRow) (*resolvedEnd
 
 // endpointFromRow 把一行转成反代目标；aibrix 网关附带 routing-strategy。
 func endpointFromRow(row *instanceRow) *resolvedEndpoint {
-	ep := &resolvedEndpoint{BaseURL: row.BaseURL, ModelID: row.ModelID, TargetPod: row.Name}
+	ep := &resolvedEndpoint{EndpointID: row.Name, BaseURL: row.BaseURL, ModelID: row.ModelID, TargetPod: row.Name}
 	if row.Kind == "aibrix" || row.RoutingRole == "gateway" {
 		ep.RoutingStrategy = routingStrategyFor(row.Metadata)
 	}
@@ -266,6 +314,32 @@ func normalizeBaseURL(b string) string {
 		return t
 	}
 	return t + "/v1"
+}
+
+// upstreamBaseURL 将容器内无法访问的 loopback 地址映射到宿主机网关。
+// service_instances 保留 127.0.0.1 便于浏览器/宿主机直连；go-server 在
+// Docker 网络中发起请求时，通过 UPSTREAM_LOOPBACK_HOST=host.docker.internal
+// 访问同一个宿主机 vLLM。未设置该变量时保持原行为，兼容本地直接运行二进制。
+func upstreamBaseURL(b string) string {
+	normalized := normalizeBaseURL(b)
+	loopbackHost := strings.TrimSpace(os.Getenv("UPSTREAM_LOOPBACK_HOST"))
+	if loopbackHost == "" {
+		return normalized
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return normalized
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return normalized
+	}
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(loopbackHost, port)
+	} else {
+		u.Host = loopbackHost
+	}
+	return u.String()
 }
 
 func endpointAvailable(status string) bool {

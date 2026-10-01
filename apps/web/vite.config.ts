@@ -6,11 +6,13 @@ import { defineConfig } from "vite";
 // - 旧控制面（已退役）：       VITE_PROXY_TARGET=http://127.0.0.1:8080
 // - 旧 FastAPI 单体（直连对照）：VITE_PROXY_TARGET=http://127.0.0.1:8088
 const proxyTarget = process.env.VITE_PROXY_TARGET || "http://127.0.0.1:8081";
+const agentProxyTarget = process.env.VITE_AGENT_PROXY_TARGET || "http://127.0.0.1:8180";
 
 export default defineConfig({
   server: {
     proxy: {
-      "/api": proxyTarget
+      "/api": proxyTarget,
+      "/agent-api": { target: agentProxyTarget, rewrite: (path) => path.replace(/^\/agent-api/, "") }
     }
   }
 });

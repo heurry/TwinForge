@@ -7,7 +7,7 @@ import { relativeTime } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../lib/useAuth";
 import { useGoToPage } from "../../lib/useGoToPage";
-import { pageLabels, type Page } from "../../types/navigation";
+import { navigationPages, pageLabels, type Page } from "../../types/navigation";
 import type { Incident } from "../../types/ops";
 
 type AlertItem = {
@@ -32,7 +32,7 @@ type AuditItem = {
 // 审计资源类型 → 跳转页面。
 const RESOURCE_PAGE: Record<string, Page> = {
   config_item: "config",
-  deployment: "pipelines",
+  deployment: "release",
   incident: "aiOps",
   service_instance: "services"
 };
@@ -65,17 +65,18 @@ export function PlatformTopBar() {
   const [openMenu, setOpenMenu] = useState<null | "notif" | "activity">(null);
   const [searchText, setSearchText] = useState("");
   const actionsRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   // 全局搜索 = 客户端页面跳转（无后端搜索服务）：匹配导航标签/键，回车跳转首个命中。
   function onSearch(event: FormEvent) {
     event.preventDefault();
     const q = searchText.trim().toLowerCase();
     if (!q) return;
-    const hit = (Object.entries(pageLabels) as Array<[Page, string]>).find(
-      ([page, label]) => label.toLowerCase().includes(q) || page.toLowerCase().includes(q)
+    const hit = navigationPages.find(
+      (page) => pageLabels[page].toLowerCase().includes(q) || page.toLowerCase().includes(q)
     );
     if (hit) {
-      goTo(hit[0]);
+      goTo(hit);
       setSearchText("");
     }
   }
@@ -83,6 +84,11 @@ export function PlatformTopBar() {
   const alertsQuery = useQuery({
     queryKey: ["alerts"],
     queryFn: () => api<{ alerts: AlertItem[]; summary: Record<string, number> }>("/api/alerts"),
+    refetchInterval: 15000
+  });
+  const platformQuery = useQuery({
+    queryKey: ["metrics", "current"],
+    queryFn: () => api<{ gpu?: unknown[]; kubernetes?: { available?: boolean } }>("/api/metrics/current"),
     refetchInterval: 15000
   });
   const incidentsQuery = useQuery({
@@ -119,6 +125,17 @@ export function PlatformTopBar() {
     };
   }, [openMenu]);
 
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", focusSearch);
+    return () => document.removeEventListener("keydown", focusSearch);
+  }, []);
+
   function navTo(page: Page) {
     setOpenMenu(null);
     goTo(page);
@@ -128,18 +145,18 @@ export function PlatformTopBar() {
     <header className="infra-topbar">
       <div className="infra-topbar-brand">
         <span className="infra-brand-mark"><Sparkles size={16} /></span>
-        <strong>AI 基础设施平台</strong>
+        <strong>TwinForge</strong>
       </div>
       <form className="infra-global-search" onSubmit={onSearch}>
         <Search size={15} />
-        <input onChange={(event) => setSearchText(event.target.value)} placeholder="搜索页面：服务 / 配置 / 压测 / 知识库…" value={searchText} />
+        <input ref={searchRef} onChange={(event) => setSearchText(event.target.value)} placeholder="搜索：训练 / 推理服务 / AIOps / 配置中心…" value={searchText} />
         <kbd>⌘ K</kbd>
       </form>
       <div className="infra-topbar-actions" ref={actionsRef}>
         <div className="infra-env-select" title="当前部署环境">
-          <span>Prod / us-east-1</span>
+          <span>本地 Minikube · {platformQuery.data?.gpu?.length ? `${platformQuery.data.gpu.length} GPU` : "GPU 检测中"}</span>
         </div>
-        <button className="infra-icon-action" title="帮助" type="button"><ShieldCheck size={16} /></button>
+        <button className="infra-icon-action" onClick={() => goTo("settings")} title="平台状态与安全设置" type="button"><ShieldCheck size={16} /></button>
 
         <div className="topbar-menu-anchor">
           <button
@@ -221,7 +238,7 @@ export function PlatformTopBar() {
           )}
         </div>
 
-        <button className="infra-icon-action" title="帮助文档" type="button"><HelpCircle size={16} /></button>
+        <button className="infra-icon-action" onClick={() => goTo("knowledge")} title="知识库与帮助文档" type="button"><HelpCircle size={16} /></button>
         {auth.authEnabled && auth.authenticated ? (
           <span className="infra-user-chip" title={`${auth.subject} · ${auth.role}`}>
             <UserRound size={14} />

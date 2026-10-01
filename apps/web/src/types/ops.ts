@@ -1,6 +1,42 @@
 // Phase 2 运维域类型：配置中心 / 发布流水线 / 审计 / 故障事件。
 // 对齐 Java 控制面契约（/api/config、/api/deployments、/api/audit、/api/incidents）。
 
+import type { SparkTone } from "./ui";
+
+// 控制台行视图模型（由真实 API 派生：配置项 → ConfigConsoleRow、部署 → PipelineConsoleRow）。
+export type ConfigConsoleRow = {
+  id: string;
+  name: string;
+  key: string;
+  namespace: string;
+  env: string;
+  type: string;
+  version: string;
+  updatedAt: string;
+  owner: string;
+  status: string;
+  versionCount: number;
+  trend: number[];
+  source: ConfigItem;
+};
+
+export type PipelineConsoleRow = {
+  id: string;
+  name: string;
+  service: string;
+  env: string;
+  version: string;
+  commit: string;
+  status: string;
+  stage: string;
+  stageMeta: string;
+  trigger: string;
+  startedAt: string;
+  duration: string;
+  tone: SparkTone | "neutral";
+  source: Deployment;
+};
+
 export type ConfigItem = {
   id: string;
   env: string;
@@ -46,6 +82,17 @@ export type DeploymentMeta = {
   updated?: number;
   message?: string;
   events?: Array<{ at: string; phase: string; message: string }>;
+	// Qwen3.6 inference release evidence and runtime binding.
+	model_id?: string;
+	model_version_id?: string;
+	endpoint_id?: string;
+	release_profile?: string;
+	release_target?: "aibrix" | "direct";
+	runtime_request?: Record<string, unknown>;
+	release_spec?: string;
+	benchmark_run_id?: string;
+	benchmark_report?: string;
+	previous_release_id?: string;
 };
 
 export type Deployment = {

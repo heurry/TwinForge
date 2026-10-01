@@ -19,7 +19,10 @@ const maxAgentSteps = 5
 
 const agentSystemPrompt = `你是云原生 AI 推理基础设施的运维诊断 agent。你可以多轮调用下列只读工具收集证据：
 - recent_metrics：当前 serving 指标（qps / error_rate / p95 / p99 等）
-- recent_deployments：最近的部署记录与状态
+- recent_deployments：最近的部署记录与状态（含训练/推理配置引用）
+- recent_config_changes：当前与上一配置版本的内容和变更原因
+- recent_logs：训练、推理、发布和健康检查日志
+- knowledge_search：从历史故障、配置变更和基准知识库检索相似证据
 - open_incidents：未解决的故障事件
 - kubernetes_pods：集群 Pod 概况（是否有非 Running）
 
@@ -47,8 +50,8 @@ func noArgsSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
 
-func (a *API) agentTools() []agentTool {
-	return []agentTool{
+func (a *API) agentTools(question string) []agentTool {
+	tools := []agentTool{
 		{
 			schema: aiclient.AgentToolSchema{Name: "recent_metrics", Description: "当前 serving 指标快照（qps/error_rate/p95/p99/request_count）", Parameters: noArgsSchema()},
 			exec: func(ctx context.Context) any {
@@ -67,7 +70,10 @@ func (a *API) agentTools() []agentTool {
 			},
 			summarize: func(v any) string {
 				m, _ := v.(map[string]any)
-				return fmt.Sprintf("error_rate=%v, p95=%v, qps=%v", m["error_rate"], m["p95_latency_ms"], m["qps"])
+				errorRate, _ := asFloat(m["error_rate"])
+				p95, _ := asFloat(m["p95_latency_ms"])
+				qps, _ := asFloat(m["qps"])
+				return fmt.Sprintf("error_rate=%.4f, p95=%.1fms, qps=%.4f", errorRate, p95, qps)
 			},
 		},
 		{
@@ -122,7 +128,8 @@ func (a *API) agentTools() []agentTool {
 				snap := a.k8sSnapshot(ctx, true, false, false, false, false)
 				notRunning := []string{}
 				for _, p := range snap.Pods {
-					if p.Phase != "Running" {
+					// Succeeded 是 Job/训练 Pod 的健康终态，不能当成运行异常。
+					if p.Phase != "Running" && p.Phase != "Succeeded" {
 						notRunning = append(notRunning, p.Namespace+"/"+p.Name+"("+p.Phase+")")
 					}
 				}
@@ -135,11 +142,36 @@ func (a *API) agentTools() []agentTool {
 			},
 		},
 	}
+	configChanges := agentTool{
+		schema:    aiclient.AgentToolSchema{Name: "recent_config_changes", Description: "最近配置版本 Diff、原因和操作人", Parameters: noArgsSchema()},
+		exec:      func(ctx context.Context) any { return a.recentConfigChanges(ctx, 12) },
+		summarize: func(v any) string { return summarizeCollection("配置变更", v) },
+	}
+	recentLogs := agentTool{
+		schema:    aiclient.AgentToolSchema{Name: "recent_logs", Description: "最近训练、推理、发布、健康检查平台日志", Parameters: noArgsSchema()},
+		exec:      func(ctx context.Context) any { return a.recentDiagnosisLogs(ctx, 30) },
+		summarize: func(v any) string { return summarizeCollection("日志", v) },
+	}
+	knowledgeSearch := agentTool{
+		schema:    aiclient.AgentToolSchema{Name: "knowledge_search", Description: "检索与当前问题相似的历史故障、配置变更和性能证据", Parameters: noArgsSchema()},
+		exec:      func(ctx context.Context) any { return a.diagnosisKnowledge(ctx, question, 5) },
+		summarize: func(v any) string { return "已检索历史诊断知识" },
+	}
+	// Stub 模式按顺序取前五个工具，因此优先覆盖新增的配置、日志、RAG
+	// 与真实 Kubernetes 证据；在线模型仍能看到并自由选择全部工具。
+	return []agentTool{tools[0], configChanges, recentLogs, knowledgeSearch, tools[3], tools[1], tools[2]}
+}
+
+func summarizeCollection(label string, value any) string {
+	if rows, ok := value.([]map[string]any); ok {
+		return fmt.Sprintf("%s %d 条", label, len(rows))
+	}
+	return label
 }
 
 // runDiagnoseAgent 跑 agent 循环，返回最终结论 + 推理轨迹 + 模式（stub/live）。
 func (a *API) runDiagnoseAgent(ctx context.Context, question string, opts *aiclient.DiagnoseOptions) (*aiclient.AgentFinal, []agentTraceStep, string, error) {
-	tools := a.agentTools()
+	tools := a.agentTools(question)
 	byName := make(map[string]agentTool, len(tools))
 	schemas := make([]aiclient.AgentToolSchema, 0, len(tools))
 	for _, t := range tools {

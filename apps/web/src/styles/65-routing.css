@@ -1,6 +1,36 @@
 /* ===== E3：模型路由 / A-B / 影子流量 ===== */
 .routing-page .storage-actions { display: inline-flex; gap: 8px; }
 
+.routing-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.routing-overview-grid article {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 13px 14px;
+  background: #fff;
+  border: 1px solid #dfe6f1;
+  border-radius: 9px;
+}
+.routing-overview-grid article > svg {
+  flex: 0 0 auto;
+  color: #2563eb;
+  padding: 8px;
+  width: 34px;
+  height: 34px;
+  background: #eff6ff;
+  border-radius: 8px;
+}
+.routing-overview-grid article span { display: grid; min-width: 0; }
+.routing-overview-grid small { color: #64748b; font-size: 11px; }
+.routing-overview-grid strong { color: #0f172a; font-size: 22px; line-height: 1.2; }
+.routing-overview-grid em { color: #64748b; font-size: 10.5px; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .routing-banner {
   margin: 0 0 14px;
   padding: 10px 14px;
@@ -17,9 +47,41 @@
   border-radius: 5px;
   color: #b45309;
 }
+.routing-banner-info { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+.routing-banner-info code { background: #dbeafe; color: #1d4ed8; }
+
+.routing-gateway-panel { margin-bottom: 14px; padding: 0; overflow: hidden; }
+.routing-gateway-total { color: #2563eb; font-size: 12px; font-weight: 800; }
+.routing-gateway-list { display: grid; gap: 10px; padding: 14px 16px; }
+.routing-gateway-row { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1.2fr); align-items: center; gap: 18px; }
+.routing-gateway-row > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.routing-gateway-row strong { color: #1e293b; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routing-gateway-row small { color: #64748b; font-size: 10.5px; }
+.routing-gateway-share { background: #e2e8f0; border-radius: 999px; height: 18px; overflow: hidden; position: relative; }
+.routing-gateway-share i { background: linear-gradient(90deg, #60a5fa, #2563eb); border-radius: 999px; display: block; height: 100%; }
+.routing-gateway-share span { color: #0f172a; font-size: 10.5px; font-weight: 800; position: absolute; right: 7px; top: 50%; transform: translateY(-50%); }
+.routing-gateway-empty { color: #64748b; font-size: 12px; margin: 0; padding: 18px 16px; }
+
+.routing-policy-panel { padding: 0; overflow: hidden; }
+.routing-policy-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e5eaf1;
+}
+.routing-policy-toolbar > div:first-child { display: grid; gap: 3px; }
+.routing-policy-toolbar strong { color: #0f172a; font-size: 14px; }
+.routing-policy-toolbar small { color: #64748b; font-size: 11.5px; }
+.routing-weight-legend { display: inline-flex; align-items: center; gap: 13px; flex: 0 0 auto; }
+.routing-weight-legend span { display: inline-flex; align-items: center; gap: 5px; color: #475569; font-size: 11px; font-weight: 700; }
+.routing-weight-legend i { display: inline-block; width: 18px; height: 7px; border-radius: 99px; }
+.routing-weight-legend i.cfg { background: #bfdbfe; }
+.routing-weight-legend i.live { background: #2563eb; }
 
 /* 策略卡片 */
-.routing-card-list { display: flex; flex-direction: column; gap: 14px; }
+.routing-card-list { display: flex; flex-direction: column; gap: 12px; padding: 14px; }
 .routing-card {
   display: flex;
   flex-direction: column;
@@ -32,6 +94,28 @@
 .routing-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .routing-card-head strong { font-size: 15px; color: #0f172a; margin-right: 8px; }
 .routing-card-head p { margin: 6px 0 0; }
+.routing-policy-kind {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  color: #0369a1;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.routing-release-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  color: #047857;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
 .routing-shadow-tag {
   display: inline-block;
   margin-left: 8px;
@@ -56,21 +140,40 @@
   border: 1px solid #eef2f7;
   border-radius: 9px;
 }
+.routing-variant.header {
+  padding-top: 0;
+  padding-bottom: 5px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: #64748b;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.routing-variant-meta { display: grid; gap: 2px; min-width: 0; }
 .routing-variant-meta strong { display: block; font-size: 13px; color: #1e293b; }
+.routing-variant-meta span { color: #334155; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routing-variant-meta small { color: #94a3b8; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .routing-share { display: flex; flex-direction: column; gap: 4px; }
+.routing-share-line {
+  display: grid;
+  grid-template-columns: 30px minmax(100px, 1fr) 42px;
+  align-items: center;
+  gap: 7px;
+}
+.routing-share-line > span { color: #64748b; font-size: 10.5px; }
+.routing-share-line > strong { color: #334155; font-size: 10.5px; text-align: right; }
 .routing-share-bar {
   position: relative;
-  height: 10px;
+  height: 7px;
   border-radius: 999px;
   background: #e2e8f0;
   overflow: hidden;
 }
 .routing-share-bar i { position: absolute; top: 0; left: 0; height: 100%; border-radius: 999px; }
 .routing-share-bar i.cfg { background: #bfdbfe; }
-.routing-share-bar i.live { background: #2563eb; opacity: 0.85; }
-.routing-share-nums { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
-.routing-share-nums em { font-style: normal; font-weight: 700; color: #334155; }
-.routing-share-nums em.cell-subtle { font-weight: 600; }
+.routing-share-bar i.live { background: #2563eb; }
+.routing-live-meta { color: #64748b; font-size: 10px; padding-left: 37px; }
 
 /* A/B 对比开合 */
 .routing-cmp-toggle {
@@ -112,3 +215,18 @@
 .routing-variant-row .routing-weight { width: 100%; }
 .routing-shadow-row { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr; gap: 8px; align-items: center; margin-top: 8px; }
 .routing-hint { font-size: 12px; color: #64748b; margin: 4px 0 0; }
+
+@media (max-width: 1000px) {
+  .routing-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .routing-policy-toolbar { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 720px) {
+  .routing-overview-grid { grid-template-columns: 1fr; }
+  .routing-variant,
+  .routing-variant.header { grid-template-columns: 1fr; }
+  .routing-variant.header { display: none; }
+  .routing-card-head { align-items: stretch; flex-direction: column; }
+  .routing-card-actions { flex-wrap: wrap; }
+  .routing-gateway-row { grid-template-columns: 1fr; gap: 7px; }
+}

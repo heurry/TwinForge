@@ -57,15 +57,17 @@ func normalizeRole(r string) string {
 
 // User 是认证后的主体（写进请求 context，供 authz + 审计用）。
 type User struct {
-	Subject string `json:"sub"`
-	Role    string `json:"role"`
+	Subject  string `json:"sub"`
+	Role     string `json:"role"`
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 type claims struct {
-	Sub  string `json:"sub"`
-	Role string `json:"role"`
-	Exp  int64  `json:"exp"`
-	Iat  int64  `json:"iat"`
+	Sub      string `json:"sub"`
+	Role     string `json:"role"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Exp      int64  `json:"exp"`
+	Iat      int64  `json:"iat"`
 }
 
 // Issuer 签发/校验 HS256 JWT。
@@ -91,10 +93,16 @@ func (i *Issuer) sign(input string) string {
 
 // Issue 签发一个 subject+role 的 JWT，返回 token 与过期时刻。
 func (i *Issuer) Issue(subject, role string) (string, time.Time) {
+	return i.IssueForTenant(subject, role, "")
+}
+
+// IssueForTenant binds the authenticated identity to one tenant so downstream
+// services never have to trust a client-supplied tenant forwarding header.
+func (i *Issuer) IssueForTenant(subject, role, tenantID string) (string, time.Time) {
 	now := time.Now()
 	exp := now.Add(i.ttl)
 	header := b64([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload, _ := json.Marshal(claims{Sub: subject, Role: normalizeRole(role), Exp: exp.Unix(), Iat: now.Unix()})
+	payload, _ := json.Marshal(claims{Sub: subject, Role: normalizeRole(role), TenantID: strings.TrimSpace(tenantID), Exp: exp.Unix(), Iat: now.Unix()})
 	signingInput := header + "." + b64(payload)
 	return signingInput + "." + i.sign(signingInput), exp
 }
@@ -123,5 +131,5 @@ func (i *Issuer) Verify(token string) (*User, error) {
 	if c.Exp > 0 && time.Now().Unix() > c.Exp {
 		return nil, fmt.Errorf("%w: expired", ErrInvalidToken)
 	}
-	return &User{Subject: c.Sub, Role: normalizeRole(c.Role)}, nil
+	return &User{Subject: c.Sub, Role: normalizeRole(c.Role), TenantID: strings.TrimSpace(c.TenantID)}, nil
 }

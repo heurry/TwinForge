@@ -17,8 +17,9 @@ import (
 
 // 6A：chat 组绞杀——Go 原生客服 RAG 对话（会话/消息→PG chat_*；messages:stream 是
 // 检索→提示→流式→落库的完整 RAG 管线，复用 #51 检索 + #48 端点解析）。
-// 偏差：不移植 response_filter（请求已 enable_thinking=false）；不写 request_traces
-// （serving 指标走 vLLM scraper）；token 数取响应 usage / 近似。
+// response_filter is intentionally omitted because thinking is disabled. The
+// completed RAG request is persisted into request_traces for the console while
+// aggregate serving metrics continue to come from the vLLM scraper.
 
 // POST /api/chat/sessions
 func (a *API) createChatSession(w http.ResponseWriter, r *http.Request) {
@@ -165,14 +166,15 @@ func (a *API) streamChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	var answer strings.Builder
 	targetPod, streamErr := "", ""
+	selectedEndpointID := req.EndpointID
+	if selectedEndpointID == "" {
+		selectedEndpointID = "auto-router"
+	}
 	ttftMs := 0.0
 	fallbackReason := decideFallback(req.Content, docs)
 
 	if fallbackReason == "" {
-		endpointID := req.EndpointID
-		if endpointID == "" {
-			endpointID = "auto-router"
-		}
+		endpointID := selectedEndpointID
 		ep, _, rerr := a.resolveEndpoint(ctx, endpointID)
 		if rerr != nil {
 			fallbackReason, streamErr = "model_endpoint_error", rerr.Error()
@@ -227,6 +229,12 @@ func (a *API) streamChatMessage(w http.ResponseWriter, r *http.Request) {
 		"target_pod": targetPod, "fallback_reason": fallbackReason, "citation_doc_ids": citationDocIDs,
 		"status": status, "error": streamErr,
 	}
+	go a.recordRequestTrace(requestTraceInput{
+		RequestID: requestID, SessionID: sessionID, EndpointID: selectedEndpointID, TargetPod: targetPod,
+		RetrievalMs: retrievalMs, TTFTMs: nilIfZero(ttftMs), GenerationMs: maxF(totalMs-retrievalMs, 0),
+		TotalMs: totalMs, Status: status, Error: streamErr,
+		Metadata: map[string]any{"plane": "rag_chat", "fallback_reason": fallbackReason, "citation_doc_ids": citationDocIDs},
+	})
 	writeSSE(w, fl, "citation", map[string]any{"request_id": requestID, "doc_ids": citationDocIDs})
 	writeSSE(w, fl, "metrics", trace)
 	writeSSE(w, fl, "done", map[string]any{"request_id": requestID})
@@ -239,7 +247,7 @@ func (a *API) streamUpstreamChat(ctx context.Context, ep *resolvedEndpoint, mess
 		"stream": true, "stream_options": map[string]any{"include_usage": true},
 		"chat_template_kwargs": map[string]any{"enable_thinking": false},
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, normalizeBaseURL(ep.BaseURL)+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamBaseURL(ep.BaseURL)+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}

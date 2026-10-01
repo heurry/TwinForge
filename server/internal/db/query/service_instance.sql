@@ -36,7 +36,10 @@ DELETE FROM service_instances WHERE name = sqlc.arg(name);
 -- TTL 清扫：超时未心跳者置 unreachable；NULL 心跳（静态种子）不动。
 UPDATE service_instances
    SET status = 'unreachable', updated_at = now()
- WHERE last_heartbeat_at IS NOT NULL
-   AND last_heartbeat_at < now() - make_interval(secs => sqlc.arg(ttl_seconds)::double precision)
+WHERE last_heartbeat_at IS NOT NULL
+  -- External gateways and logical routers are checked through their target;
+  -- they do not emit process heartbeats to the control plane.
+  AND lower(kind) NOT IN ('aibrix', 'auto_router', 'client_round_robin')
+  AND last_heartbeat_at < now() - make_interval(secs => sqlc.arg(ttl_seconds)::double precision)
    AND status <> 'unreachable'
 RETURNING name;

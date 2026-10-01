@@ -161,10 +161,97 @@ func (a *API) rebuildKnowledgeIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		count++
 	}
+	operationalCount, err := a.indexOperationalKnowledge(r)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	count += operationalCount
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "rebuilt", "index_type": "pgvector_hnsw_v1", "document_count": count,
-		"note": "Corpus = benchmark serving logs (option A); embeddings via ai-service /internal/embed.",
+		"operational_document_count": operationalCount,
+		"note":                       "Corpus = benchmark evidence + historical incidents + config changes + training outcomes; embeddings via ai-service /internal/embed.",
 	})
+}
+
+func (a *API) indexOperationalKnowledge(r *http.Request) (int, error) {
+	ctx := r.Context()
+	type operationalDoc struct{ id, title, category, text, source string }
+	docs := []operationalDoc{}
+
+	incidentRows, err := a.Pool.Query(ctx, `SELECT id, title, severity, status, COALESCE(summary,''), created_at, resolved_at
+		FROM incidents ORDER BY created_at DESC LIMIT 300`)
+	if err != nil {
+		return 0, err
+	}
+	for incidentRows.Next() {
+		var id, title, severity, status, summary string
+		var createdAt time.Time
+		var resolvedAt *time.Time
+		if err := incidentRows.Scan(&id, &title, &severity, &status, &summary, &createdAt, &resolvedAt); err != nil {
+			incidentRows.Close()
+			return 0, err
+		}
+		text := fmt.Sprintf("Incident: %s\nSeverity: %s\nStatus: %s\nSummary/root cause: %s\nCreated: %s\nResolved: %v",
+			title, severity, status, summary, createdAt.UTC().Format(time.RFC3339), resolvedAt)
+		docs = append(docs, operationalDoc{"incident:" + id, title, "incident", text, "incidents/" + id})
+	}
+	incidentRows.Close()
+
+	configRows, err := a.Pool.Query(ctx, `SELECT c.id, c.config_key, c.env, v.version, COALESCE(v.change_reason,''),
+		COALESCE(v.operator,''), COALESCE(v.content,''), v.created_at
+		FROM config_versions v JOIN config_items c ON c.id=v.config_item_id
+		ORDER BY v.created_at DESC LIMIT 300`)
+	if err != nil {
+		return 0, err
+	}
+	for configRows.Next() {
+		var id, key, env, reason, operator, content string
+		var version int
+		var createdAt time.Time
+		if err := configRows.Scan(&id, &key, &env, &version, &reason, &operator, &content, &createdAt); err != nil {
+			configRows.Close()
+			return 0, err
+		}
+		if len(content) > 4000 {
+			content = content[:4000]
+		}
+		text := fmt.Sprintf("Config change: %s v%d\nEnvironment: %s\nReason: %s\nOperator: %s\nChanged: %s\nContent:\n%s",
+			key, version, env, reason, operator, createdAt.UTC().Format(time.RFC3339), content)
+		docID := fmt.Sprintf("config:%s:v%d", id, version)
+		docs = append(docs, operationalDoc{docID, key + fmt.Sprintf(" v%d", version), "config", text, "config_items/" + id})
+	}
+	configRows.Close()
+
+	trainingRows, err := a.Pool.Query(ctx, `SELECT id, name, base_model, status, hyperparams, metadata, created_at
+		FROM training_jobs ORDER BY created_at DESC LIMIT 200`)
+	if err == nil {
+		for trainingRows.Next() {
+			var id, name, baseModel, status string
+			var hyperparams, metadata []byte
+			var createdAt time.Time
+			if trainingRows.Scan(&id, &name, &baseModel, &status, &hyperparams, &metadata, &createdAt) == nil {
+				text := fmt.Sprintf("Training job: %s\nBase model: %s\nStatus: %s\nHyperparameters: %s\nEvents and evidence: %s\nCreated: %s",
+					name, baseModel, status, hyperparams, metadata, createdAt.UTC().Format(time.RFC3339))
+				docs = append(docs, operationalDoc{"training:" + id, name, "training", text, "training_jobs/" + id})
+			}
+		}
+		trainingRows.Close()
+	}
+
+	count := 0
+	for _, doc := range docs {
+		source := doc.source
+		if err := a.Store.UpsertDocument(ctx, store.Document{DocID: doc.id, Title: doc.title, Content: doc.text,
+			Category: doc.category, Version: knowledgeVersion, SourceURI: &source}); err != nil {
+			return count, err
+		}
+		if err := a.embedAndStore(r, doc.id, knowledgeVersion, doc.text); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 // GET /api/knowledge/search?q=&top_k=

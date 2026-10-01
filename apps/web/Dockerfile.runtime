@@ -1,0 +1,10 @@
+# Offline/local fallback: the SPA must already be built by `npm run build`.
+# The normal reproducible image remains Dockerfile (Node build + pinned Nginx).
+ARG NGINX_IMAGE=nginx:latest
+FROM ${NGINX_IMAGE}
+ENV GO_SERVER_UPSTREAM="localhost:8081" \
+    AGENT_API_UPSTREAM="localhost:8180" \
+    NGINX_ENVSUBST_FILTER="GO_SERVER_UPSTREAM|AGENT_API_UPSTREAM"
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY dist /usr/share/nginx/html
+EXPOSE 80

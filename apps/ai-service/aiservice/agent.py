@@ -23,7 +23,7 @@ from aiservice.schemas import (
 )
 
 # stub 取证上限：最多调这么多工具就收口下结论（保证多轮但不无限）。
-STUB_MAX_TOOLS = 3
+STUB_MAX_TOOLS = 5
 
 
 def run_agent_step(req: AgentStepRequest, cfg: Config) -> AgentStepResponse:
@@ -49,6 +49,7 @@ def run_agent_step(req: AgentStepRequest, cfg: Config) -> AgentStepResponse:
 def _live_step(req: AgentStepRequest, cfg: Config) -> AgentStepResponse:
     from aiservice import llm  # 延迟导入：单测 stub 时无需 requests
 
+    base_url, model, _ = llm.resolve_upstream(cfg)
     oa_tools = [
         {
             "type": "function",
@@ -61,7 +62,7 @@ def _live_step(req: AgentStepRequest, cfg: Config) -> AgentStepResponse:
         for t in req.tools
     ]
     msg = llm.chat_with_tools(
-        cfg.llm_base_url, cfg.llm_model, cfg.llm_api_key, req.messages, oa_tools,
+        base_url, model, cfg.llm_api_key, req.messages, oa_tools,
         max_tokens=req.max_tokens, temperature=req.temperature, timeout=cfg.request_timeout,
     )
     content = str(msg.get("content") or "")

@@ -1,0 +1,19 @@
+# Sequence-cap A/B candidate: only max_num_seqs changes.
+model: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+served_model_name: qwen36-27b-awq
+tensor_parallel_size: 2
+dtype: float16
+max_model_len: 4096
+gpu_memory_utilization: 0.85
+max_num_seqs: 16
+max_num_batched_tokens: 4096
+enable_prefix_caching: false
+enable_chunked_prefill: true
+disable_custom_all_reduce: true
+language_model_only: true
+reasoning_parser: qwen3
+generation_config: vllm
+trust_remote_code: true
+host: 0.0.0.0
+port: 8021
+api_key: ""

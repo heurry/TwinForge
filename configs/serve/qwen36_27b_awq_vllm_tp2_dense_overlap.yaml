@@ -1,0 +1,38 @@
+# Rejected experimental profile retained for reproducibility. Layer-internal
+# Marlin splitting regressed the targeted endpoint matrix; do not release it.
+model: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+served_model_name: qwen36-27b-awq
+tensor_parallel_size: 2
+pipeline_parallel_size: 1
+dtype: float16
+max_model_len: 4096
+gpu_memory_utilization: 0.85
+max_num_seqs: 8
+max_num_batched_tokens: 4096
+enable_prefix_caching: true
+enable_chunked_prefill: true
+disable_custom_all_reduce: true
+
+# Split only large RowParallel GEMMs. Attention, KV metadata and decode remain
+# monolithic; this avoids the hybrid-attention metadata constraints of DBO.
+enable_dbo: false
+dense_tp_overlap: true
+dense_tp_overlap_min_tokens: 1024
+
+# First correctness/performance gate uses eager execution. CUDA graph support
+# is evaluated only after the stream/event schedule is validated end to end.
+enforce_eager: true
+
+# GPU1 is PCIe 4.0 x4 through the chipset and peer access is unavailable.
+nccl_p2p_disable: 1
+nccl_shm_disable: 0
+nccl_algo: Ring
+nccl_min_nchannels: 4
+nccl_max_nchannels: 4
+language_model_only: true
+reasoning_parser: qwen3
+generation_config: vllm
+trust_remote_code: true
+host: 0.0.0.0
+port: 8021
+api_key: ""

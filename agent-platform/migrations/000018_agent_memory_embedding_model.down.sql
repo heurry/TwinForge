@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS agent_platform.idx_agent_memories_embedding_model;

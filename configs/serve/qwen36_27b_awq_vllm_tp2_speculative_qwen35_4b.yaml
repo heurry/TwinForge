@@ -1,0 +1,32 @@
+# REJECTED: vLLM resolves this independent 4B model as Qwen3.5 MTP, but its
+# hidden size (2560) is incompatible with the 27B target hidden size (5120).
+# Retained only to reproduce the startup failure.
+model: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+draft_model: /mnt/nvme-data/models/LLM_model/Qwen3.5-4B
+served_model_name: qwen36-27b-awq
+tensor_parallel_size: 2
+pipeline_parallel_size: 1
+dtype: float16
+max_model_len: 4096
+gpu_memory_utilization: 0.85
+max_num_seqs: 8
+max_num_batched_tokens: 4096
+enable_prefix_caching: true
+enable_chunked_prefill: true
+disable_custom_all_reduce: true
+speculative_config:
+  model: /mnt/nvme-data/models/LLM_model/Qwen3.5-4B
+  num_speculative_tokens: 3
+  draft_tensor_parallel_size: 2
+nccl_p2p_disable: 1
+nccl_shm_disable: 0
+nccl_algo: Ring
+nccl_min_nchannels: 4
+nccl_max_nchannels: 4
+language_model_only: true
+reasoning_parser: qwen3
+generation_config: vllm
+trust_remote_code: true
+host: 0.0.0.0
+port: 8021
+api_key: ""

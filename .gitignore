@@ -3,6 +3,13 @@ __pycache__/
 .codex
 .claude/
 .venv/
+.venv-awq/
+.venv.backup-*/
+.env
+.env.*
+!.env.example
+!*.env.example
+.patch-work-*/
 node_modules/
 browser_extensions/
 screenshots/
@@ -19,12 +26,17 @@ logs/aibrix_4b/
 logs/full_stack/
 logs/observability/
 logs/runtime/
+logs/inference/
 logs/download_data_*.log
 logs/seqs*.log
+/logs/
+/artifacts/
+/.cache/
 *.pid
 errortxt
 知识积累.md
 deploy/compose/.secrets/
+deploy/compose/gitlab.env
 /*.png
 /分析报告*.md
 /思路.md
@@ -33,9 +45,15 @@ deploy/compose/.secrets/
 /test.py
 /package.json
 /package-lock.json
+/docs.zip
+/简历.zip
+/简历/
+/infra.txt
+/infra_ideal_plus_ai_system.txt
 /configs/train/
 /configs/data/
 /configs/model/
 # 内部规划文档（PRD/架构/数据库/迁移计划/前端建议等）：仅本地保留，不进公开仓库。
 # 历史版本仍在 git 里，可用：git restore --source=327ff41^ -- '云原生平台/' 找回。
 云原生平台/
+.agent-workspaces/

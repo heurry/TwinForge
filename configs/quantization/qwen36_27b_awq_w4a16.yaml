@@ -1,0 +1,24 @@
+model_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B
+output_path: /mnt/nvme-data/models/LLM_model/Qwen3.6-27B-AWQ-INT4
+calibration_source: data/cleaned/dianjin_csc_sft_train.jsonl
+calibration_path: data/quantization/dianjin_csc_awq_calibration.jsonl
+offload_path: /mnt/nvme-data/models/LLM_model/.awq-offload/qwen36-27b
+status_path: runs/quantization/qwen36-27b-awq/status.json
+max_gpu_memory_gib: 17
+max_cpu_memory_gib: 32
+scheme: W4A16_ASYM
+targets:
+  - Linear
+ignore:
+  - lm_head
+  # Marlin on SM86 cannot run Qwen3.6 GDN projections after TP=2 sharding.
+  - 're:.*linear_attn.*'
+deployment_ignore:
+  - 're:^visual\..*'
+  - 're:.*linear_attn.*'
+num_calibration_samples: 128
+max_seq_length: 1024
+seed: 42
+pipeline: sequential
+sequential_offload_device: cpu
+duo_scaling: both

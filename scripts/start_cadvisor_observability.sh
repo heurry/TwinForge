@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CADVISOR_PORT="${CADVISOR_PORT:-18080}"
+CADVISOR_PORT="${CADVISOR_PORT:-18081}"
 CADVISOR_TIMEOUT="${CADVISOR_TIMEOUT:-300s}"
 LOG_DIR="${LOG_DIR:-logs/observability}"
 MANIFEST="${MANIFEST:-deploy/observability/cadvisor.yaml}"

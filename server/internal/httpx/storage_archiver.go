@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// C2：分层存储生命周期。把 PG 中过期的高频数据（metrics_samples / audit_events）序列化为 NDJSON
+// C2：分层存储生命周期。把 PG 中过期的高频数据（metrics / traces / logs / audit）序列化为 NDJSON
 // 归档到 MinIO 对象层，并登记 archive_manifests（使冷数据可回溯），随后从 PG 删除——PG 体积下降、
 // 冷数据下沉。保留期由配置中心 storage.retention 驱动（平台用自己的配置中心管自己）。
 //
@@ -27,17 +27,19 @@ type archiveTarget struct {
 
 var archiveTargets = []archiveTarget{
 	{table: "metrics_samples", tsColumn: "created_at", defaultDays: 7},
+	{table: "request_traces", tsColumn: "created_at", defaultDays: 7},
+	{table: "platform_logs", tsColumn: "timestamp", defaultDays: 14},
 	{table: "audit_events", tsColumn: "created_at", defaultDays: 30},
 }
 
 // archiveResult 是一张表一次归档的结果（供 API 返回 / 日志）。
 type archiveResult struct {
-	Table     string `json:"table"`
-	RowCount  int    `json:"row_count"`
-	Bytes     int64  `json:"bytes"`
-	ObjectKey string `json:"object_key,omitempty"`
-	RetentionDays int `json:"retention_days"`
-	Skipped   string `json:"skipped,omitempty"`
+	Table         string `json:"table"`
+	RowCount      int    `json:"row_count"`
+	Bytes         int64  `json:"bytes"`
+	ObjectKey     string `json:"object_key,omitempty"`
+	RetentionDays int    `json:"retention_days"`
+	Skipped       string `json:"skipped,omitempty"`
 }
 
 // retentionDays 读配置中心 storage.retention（JSON: {"<table>_days": N}）合并内置默认。
@@ -102,9 +104,9 @@ func (a *API) archiveTable(ctx context.Context, t archiveTarget, days int, opera
 		return res, err
 	}
 	var (
-		buf            bytes.Buffer
-		count          int
-		minTS, maxTS   time.Time
+		buf          bytes.Buffer
+		count        int
+		minTS, maxTS time.Time
 	)
 	for rows.Next() {
 		var id string

@@ -95,7 +95,10 @@ func (q *Queries) RegisterServiceInstance(ctx context.Context, arg RegisterServi
 const sweepStaleServiceInstances = `-- name: SweepStaleServiceInstances :many
 UPDATE service_instances
    SET status = 'unreachable', updated_at = now()
- WHERE last_heartbeat_at IS NOT NULL
+WHERE last_heartbeat_at IS NOT NULL
+   -- External gateways and logical routers are checked through their target;
+   -- they do not emit process heartbeats to the control plane.
+   AND lower(kind) NOT IN ('aibrix', 'auto_router', 'client_round_robin')
    AND last_heartbeat_at < now() - make_interval(secs => $1::double precision)
    AND status <> 'unreachable'
 RETURNING name

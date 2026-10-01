@@ -1,575 +1,238 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity,
-  AlertTriangle,
-  Gauge,
-  Home,
-  Layers,
-  MoreVertical,
-  Play,
-  RefreshCw,
-  Route,
-  Server,
-  ShieldCheck,
-  type LucideIcon,
+  Activity, AlertTriangle, ArrowRight, Bot, Boxes, CheckCircle2, Cpu,
+  Database, Gauge, GraduationCap, RefreshCw, Rocket, Server, Square,
 } from "lucide-react";
 
-import {
-  Donut,
-  KpiGrid,
-  PageHeader,
-  PanelHeader,
-  Sparkline,
-  StatusBadge,
-} from "../components/common/PlatformPrimitives";
 import { EmptyState, ErrorState, Skeleton } from "../components/common/FeedbackStates";
-import { dashboardSnapshot } from "../data/platformSnapshots";
-import { api } from "../lib/api";
-import { bytes, byteRate, compact, fmt, pct, relativeTime } from "../lib/format";
-import { cn } from "../lib/utils";
+import { PageHeader, PanelHeader, StatusBadge } from "../components/common/PlatformPrimitives";
+import { api, listModelRegistry } from "../lib/api";
+import { fmt, relativeTime } from "../lib/format";
+import { useGoToPage } from "../lib/useGoToPage";
 import type { Page } from "../types/navigation";
-import type { Metrics, MetricsHistorySample } from "../types/platform";
 import type { Deployment, Incident } from "../types/ops";
-import type { KpiItem } from "../types/ui";
+import type { Metrics } from "../types/platform";
+import type { TrainingJobsList } from "../types/training";
 
-type Overview = {
-  health_score: number;
-  services: { total: number; healthy: number };
-  active_alerts: number;
-  recent_benchmarks: number;
-  recent_benchmark_runs: Array<Record<string, unknown>>;
-  kubernetes: { available: boolean; pods: unknown[] };
+type Runtime = {
+  available?: boolean;
+  status?: string;
+  model?: string;
+  profile?: string;
+  prefix_caching?: boolean;
+  config?: { max_num_seqs?: number; max_num_batched_tokens?: number; chunked_prefill?: boolean };
 };
-
-type TrendTone = "info" | "success" | "warning" | "danger";
-
-type ServiceRow = {
-  id: string;
-  name: string;
-  subtitle: string;
-  status: string;
-  qps: number;
-  p95: number;
-  errorRate: number;
-  availability: number;
-  tone: TrendTone;
-  trend: number[];
+type Scenario = {
+  context_length?: number;
+  concurrency?: number;
+  success_rate?: number;
+  quality_gate_pass_rate?: number;
+  p95_ttft_ms?: number;
+  p95_tpot_ms?: number;
+  p95_ms?: number;
+  output_throughput_tokens_per_second?: number;
+  output_tokens_per_second?: number;
 };
-
-type DeployRow = { id: string; pipeline: string; version: string; env: string; status: string; time: string };
-
-type WeeklyRow = { id: string; label: string; value: string; delta: string; tone: TrendTone; values: number[] };
-
-// "—" 占位：真实端点缺失/加载中时显示，绝不用写死数字伪装成有数据（5A.1）。
-function show(value: number | null | undefined, format: (n: number) => string): string {
-  return value == null || Number.isNaN(value) ? "—" : format(value);
-}
-
-function deltaOf(series: number[]): { delta: string; deltaTone: "up" | "down" | "flat" } {
-  if (series.length < 2) return { delta: "", deltaTone: "flat" };
-  const change = ((series[series.length - 1] - series[0]) / (series[0] || 1)) * 100;
-  return {
-    delta: `${change >= 0 ? "+" : ""}${change.toFixed(1)}%`,
-    deltaTone: change > 0 ? "up" : change < 0 ? "down" : "flat",
+type Evidence = {
+  inference?: {
+    benchmark?: { run_id?: string; endpoint_id?: string; updated_at?: string; prefix_caching?: boolean; summary?: { scenarios?: Scenario[] } };
   };
-}
+};
 
-function deltaArrow(series: number[]): string {
-  const { delta, deltaTone } = deltaOf(series);
-  if (!delta) return "";
-  const arrow = deltaTone === "up" ? "↑" : deltaTone === "down" ? "↓" : "→";
-  return `${arrow} ${delta.replace(/^[+-]/, "")}`;
-}
+const trainingLifecycle: Array<{ label: string; page: Page; icon: typeof Database }> = [
+  { label: "模型与数据", page: "datasets", icon: Database },
+  { label: "训练任务", page: "training", icon: GraduationCap },
+  { label: "版本归档", page: "models", icon: Boxes },
+  { label: "训练诊断", page: "aiOps", icon: Bot },
+];
+const inferenceLifecycle: Array<{ label: string; page: Page; icon: typeof Database }> = [
+  { label: "推理模型", page: "models", icon: Boxes },
+  { label: "运行配置", page: "config", icon: Database },
+  { label: "压测验收", page: "benchmarks", icon: Gauge },
+  { label: "发布上线", page: "release", icon: Rocket },
+  { label: "生产诊断", page: "aiOps", icon: Bot },
+];
 
 export function PlatformOverviewPage({ setPage }: { setPage: (page: Page) => void }) {
-  const overviewQuery = useQuery({
-    queryKey: ["platform", "overview"],
-    queryFn: () => api<Overview>("/api/platform/overview"),
-    refetchInterval: 10000,
-  });
-  const metricsQuery = useQuery({
-    queryKey: ["metrics", "current"],
-    queryFn: () => api<Metrics>("/api/metrics/current"),
-    refetchInterval: 5000,
-  });
-  const historyQuery = useQuery({
-    queryKey: ["metrics", "history", "dashboard"],
-    queryFn: () => api<{ samples: MetricsHistorySample[] }>("/api/metrics/history?limit=30"),
-    refetchInterval: 15000,
-  });
-  const deploymentsQuery = useQuery({
-    queryKey: ["deployments", "dashboard"],
-    queryFn: () => api<{ deployments: Deployment[] }>("/api/deployments"),
-    refetchInterval: 15000,
-  });
-  const incidentsQuery = useQuery({
-    queryKey: ["incidents", "dashboard"],
-    queryFn: () => api<{ incidents: Incident[] }>("/api/incidents?status=open"),
-    refetchInterval: 15000,
-  });
+  const goTo = useGoToPage();
+  const runtime = useQuery({ queryKey: ["inference", "runtime"], queryFn: () => api<Runtime>("/api/inference/runtime"), retry: false, refetchInterval: 5000 });
+  const training = useQuery({ queryKey: ["training", "jobs"], queryFn: () => api<TrainingJobsList>("/api/training/jobs"), retry: false, refetchInterval: 5000 });
+  const evidence = useQuery({ queryKey: ["ai", "inference", "evidence", "latest"], queryFn: () => api<Evidence>("/api/ai/inference/evidence"), retry: false, refetchInterval: 15000 });
+  const metrics = useQuery({ queryKey: ["metrics", "current"], queryFn: () => api<Metrics>("/api/metrics/current"), retry: false, refetchInterval: 5000 });
+  const registry = useQuery({ queryKey: ["model-registry"], queryFn: listModelRegistry, retry: false });
+  const deployments = useQuery({ queryKey: ["deployments"], queryFn: () => api<{ deployments: Deployment[] }>("/api/deployments"), retry: false, refetchInterval: 10000 });
+  const incidents = useQuery({ queryKey: ["incidents", "dashboard"], queryFn: () => api<{ incidents: Incident[] }>("/api/incidents?status=open"), retry: false, refetchInterval: 15000 });
 
-  const overview = overviewQuery.data;
-  const metrics = metricsQuery.data ?? null;
-  const samples = useMemo(() => historyQuery.data?.samples ?? [], [historyQuery.data]);
-  const incidents = useMemo(() => incidentsQuery.data?.incidents ?? [], [incidentsQuery.data]);
-  const deployments = useMemo(() => deploymentsQuery.data?.deployments ?? [], [deploymentsQuery.data]);
+  const jobs = training.data?.jobs ?? [];
+  const activeTraining = jobs.find((job) => job.status === "running" || job.status === "pending");
+  const runtimeActive = runtime.data?.status === "ready" || runtime.data?.status === "starting";
+  const channel = runtimeActive && activeTraining ? "conflict" : runtimeActive ? "inference" : activeTraining ? "training" : "idle";
+  const latestTraining = jobs[0];
+  const scenarios = evidence.data?.inference?.benchmark?.summary?.scenarios ?? [];
+  const latestDeployment = deployments.data?.deployments?.find((item) => item.metadata.mode === "inference_runtime");
+  const openIncidents = incidents.data?.incidents ?? [];
+  const gpu = metrics.data?.gpu ?? [];
+  const gpuMemory = gpu.length ? Math.max(...gpu.map((item) => item.memory_utilization_percent ?? (item.memory_used_mb / Math.max(item.memory_total_mb, 1)) * 100)) : null;
+  const gpuUtil = gpu.length ? Math.max(...gpu.map((item) => item.gpu_utilization_percent)) : null;
+  const benchmark = useMemo(() => summarizeScenarios(scenarios), [scenarios]);
+  const evidenceModelID = modelIDFromEndpoint(evidence.data?.inference?.benchmark?.endpoint_id) || runtime.data?.model;
+  const versions = registry.data?.versions ?? [];
+  const activeVersions = versions.filter((version) => version.status === "active" || version.status === "serving").length;
 
-  // 真实标量：缺失即为 null → 显示 "—"，不再回退写死默认值。
-  const serviceCount = overview?.services.total ?? metrics?.service_instances?.length ?? null;
-  const healthyCount = overview?.services.healthy ?? metrics?.service_instances?.filter((i) => i.status === "healthy").length ?? null;
-  const podCount = overview?.kubernetes.pods.length ?? metrics?.kubernetes.pods.length ?? null;
-  const incidentCount = incidentsQuery.data ? incidents.length : overview?.active_alerts ?? null;
-  const healthScore = overview?.health_score ?? null;
-  const reqCount = metrics?.request_count ?? null;
-  const qps = metrics?.qps ?? null;
-  const p95 = metrics?.p95_latency_ms ?? null;
-  const ttft = metrics?.p95_ttft_ms ?? null;
-  const errorRate = metrics?.error_rate ?? null;
-  const throughput = metrics?.tokens_per_second ?? null;
-  const gpuUtil = metrics?.gpu?.length ? Math.max(...metrics.gpu.map((g) => g.gpu_utilization_percent)) : null;
-  const host = metrics?.host;
-  const cpuUtil = host?.cpu?.usage_percent ?? null;
-  const cpuCount = host?.cpu?.count || null;
-  const memUtil = host?.memory?.used_percent ?? null;
-  const memUsed = host?.memory?.used_bytes ?? null;
-  const memTotal = host?.memory?.total_bytes || null;
-  const rootDisk = pickRootDisk(host?.disk);
-  const net = host?.network ?? null;
-  const activeModels = metrics?.service_instances?.length
-    ? new Set(metrics.service_instances.map((i) => i.model_id).filter(Boolean)).size
-    : null;
-  const k8sHealth = overview?.kubernetes.available ?? metrics?.kubernetes.available ?? null;
-  const finishedDeploys = deployments.filter((d) => d.status === "success" || d.status === "failed");
-  const deploySuccess = finishedDeploys.length
-    ? Math.round((finishedDeploys.filter((d) => d.status === "success").length / finishedDeploys.length) * 100)
-    : null;
-
-  // 迷你趋势：一律从 /api/metrics/history 派生；无对应序列则留空（Sparkline 不渲染）。
-  const series = (selector: (m: Partial<Metrics>) => number | null | undefined): number[] =>
-    samples.map((s) => selector(s.metrics)).filter((v): v is number => typeof v === "number");
-  const reqSeries = series((m) => m.request_count);
-  const qpsSeries = series((m) => m.qps);
-  const errSeries = series((m) => (typeof m.error_rate === "number" ? m.error_rate * 100 : null));
-  const p95Series = series((m) => m.p95_latency_ms);
-  const tpsSeries = series((m) => m.tokens_per_second);
-  const gpuSeries = series((m) => (m.gpu?.length ? Math.max(...m.gpu.map((g) => g.gpu_utilization_percent)) : null));
-
-  const serviceRows = useMemo(() => deriveServiceRows(metrics), [metrics]);
-  const deploymentRows = useMemo(() => deriveDeployments(deployments), [deployments]);
-  const alertBreakdown = useMemo(() => deriveAlertBreakdown(incidents), [incidents]);
-  const weeklyTrend = useMemo<WeeklyRow[]>(() => {
-    if (!samples.length) return [];
-    return [
-      { id: "requests", label: "请求量", value: show(reqCount, (v) => compact(v, 0)), delta: deltaArrow(reqSeries), tone: "info", values: reqSeries },
-      { id: "errors", label: "错误率", value: show(errorRate, (v) => `${fmt(v * 100, 2)}%`), delta: deltaArrow(errSeries), tone: "success", values: errSeries },
-      { id: "latency", label: "P95 延迟", value: show(p95, (v) => `${fmt(v, 0)}ms`), delta: deltaArrow(p95Series), tone: "warning", values: p95Series },
-      { id: "gpu", label: "GPU 利用率", value: show(gpuUtil, (v) => `${fmt(v, 0)}%`), delta: deltaArrow(gpuSeries), tone: "info", values: gpuSeries },
-    ];
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [samples, reqCount, errorRate, p95, gpuUtil]);
-
-  const gpuTone: TrendTone = gpuUtil == null ? "info" : gpuUtil >= 90 ? "danger" : gpuUtil >= 75 ? "warning" : "success";
-  const gpuKpiTone: "success" | "warning" | "danger" | undefined =
-    gpuUtil == null ? undefined : gpuUtil >= 90 ? "danger" : gpuUtil >= 75 ? "warning" : "success";
-  // 资源使用概览：CPU/内存/存储/网络 由 metrics.host（Agent 节点采集）派生，GPU 由 metrics.gpu；
-  // 无 Agent（host 为空降级结构）时显示"等待 Agent 采集"，不再用写死的 "186/320 Core" 占位。
-  const gpuCount = metrics?.gpu?.length ?? 0;
-  const gpuStatus = metrics?.gpu_status;
-  const gpuDetail = gpuCount ? `${gpuCount}×GPU` : gpuStatus?.error ? "Agent GPU 采集异常" : "等待 GPU 指标";
-  const resourceLines: Array<{ id: string; label: string; value: number | null; detail: string; tone: TrendTone }> = [
-    { id: "cpu", label: "CPU", value: cpuUtil, tone: utilTone(cpuUtil), detail: cpuCount && cpuUtil != null ? `${fmt((cpuCount * cpuUtil) / 100, 1)} / ${cpuCount} Core` : cpuCount ? `— / ${cpuCount} Core` : "等待 Agent 采集" },
-    { id: "memory", label: "内存", value: memUtil, tone: utilTone(memUtil), detail: memTotal ? `${bytes(memUsed)} / ${bytes(memTotal)}` : "等待 Agent 采集" },
-    { id: "storage", label: "存储", value: rootDisk?.used_percent ?? null, tone: utilTone(rootDisk?.used_percent ?? null), detail: rootDisk ? `${bytes(rootDisk.used_bytes)} / ${bytes(rootDisk.total_bytes)}` : "等待 Agent 采集" },
-    { id: "gpu", label: "GPU", value: gpuUtil, tone: gpuStatus?.error && !gpuCount ? "warning" : gpuTone, detail: gpuDetail },
-    { id: "network", label: "网络", value: null, tone: "info", detail: net ? `↓${byteRate(net.rx_bytes_per_second)} ↑${byteRate(net.tx_bytes_per_second)}` : "等待 Agent 采集" },
-  ];
-
-  const kpis: KpiItem[] = [
-    {
-      id: "health",
-      label: "整体健康",
-      value: healthScore == null ? "—" : healthScore >= 90 ? "健康" : String(healthScore),
-      detail: healthScore == null ? "等待数据" : healthScore >= 90 ? "无严重告警" : `${healthScore} 分`,
-      trend: [],
-      tone: healthScore == null ? undefined : healthScore >= 90 ? "success" : healthScore >= 70 ? "warning" : "danger",
-    },
-    {
-      id: "services",
-      label: "服务实例",
-      value: show(serviceCount, (v) => compact(v, 0)),
-      detail: serviceCount == null ? "等待数据" : `运行中 ${healthyCount ?? "—"} | 异常 ${healthyCount != null ? Math.max(serviceCount - healthyCount, 0) : "—"}`,
-      trend: [],
-    },
-    { id: "models", label: "活跃模型", value: show(activeModels, (v) => compact(v, 0)), detail: "在线绑定", trend: [] },
-    {
-      id: "k8s",
-      label: "Kubernetes",
-      value: show(podCount, (v) => compact(v, 0)),
-      detail: k8sHealth == null ? "等待数据" : k8sHealth ? "集群正常" : "Agent 不可用",
-      trend: [],
-      tone: k8sHealth === false ? "warning" : undefined,
-    },
-    { id: "gpu", label: "GPU 健康", value: show(gpuUtil, (v) => pct(v, 0)), detail: gpuCount ? "利用率" : gpuStatus?.error ? "采集异常" : "等待指标", trend: gpuSeries, ...deltaOf(gpuSeries), tone: gpuStatus?.error && !gpuCount ? "warning" : gpuKpiTone },
-    {
-      id: "events",
-      label: "待处理事件",
-      value: show(incidentCount, (v) => String(v)),
-      detail: incidentCount == null ? "等待数据" : `${incidentCount} 个未解决`,
-      trend: [],
-      tone: (incidentCount ?? 0) > 3 ? "warning" : undefined,
-    },
-    { id: "deploy", label: "部署成功率", value: deploySuccess == null ? "—" : `${deploySuccess}%`, detail: finishedDeploys.length ? `近 ${finishedDeploys.length} 次` : "暂无完成记录", trend: [], tone: "success" },
-  ];
+  function refreshAll() {
+    runtime.refetch(); training.refetch(); evidence.refetch(); metrics.refetch(); registry.refetch(); deployments.refetch(); incidents.refetch();
+  }
 
   return (
-    <section className="infra-page dashboard-page replica-dashboard">
+    <section className="infra-page twinforge-overview">
       <PageHeader
-        title="平台总览"
-        subtitle="基础设施健康与业务运行全局态势"
-        actions={
-          <button
-            className="console-refresh"
-            type="button"
-            onClick={() => {
-              overviewQuery.refetch();
-              metricsQuery.refetch();
-              historyQuery.refetch();
-              deploymentsQuery.refetch();
-              incidentsQuery.refetch();
-            }}
-          >
-            <RefreshCw size={14} /> 刷新
-          </button>
-        }
+        title="TwinForge 模型交付总览"
+        subtitle="单机双卡 3090 · 训练微调与生产推理双轨交付，配置、任务、压测、发布和诊断证据全程关联"
+        actions={<button className="console-refresh" type="button" onClick={refreshAll}><RefreshCw size={14} /> 刷新</button>}
       />
 
-      <KpiGrid className="dashboard-kpi-strip dashboard-kpi-strip-seven" items={kpis} />
-
-      <div className="dashboard-top-grid">
-        <section className="infra-panel dashboard-alert-panel">
-          <PanelHeader title="告警概览" action="按未解决事件" />
-          <div className="dashboard-alert-content">
-            <div className="dashboard-alert-breakdown">
-              {incidentsQuery.isLoading ? (
-                <Skeleton rows={2} />
-              ) : incidentsQuery.isError ? (
-                <ErrorState error={incidentsQuery.error} onRetry={incidentsQuery.refetch} />
-              ) : alertBreakdown.length ? (
-                alertBreakdown.map((item) => (
-                  <div className={cn("dashboard-alert-tile", item.tone)} key={item.id}>
-                    <span>{item.label}</span>
-                    <strong>{item.count}</strong>
-                    <small>{item.status}</small>
-                  </div>
-                ))
-              ) : (
-                <EmptyState title="暂无未解决事件" />
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="infra-panel dashboard-resource-panel">
-          <PanelHeader title="资源使用概览" action="实时" />
-          <div className="dashboard-resource-list">
-            {resourceLines.map((resource) => (
-              <ResourceLine
-                detail={resource.detail}
-                key={resource.id}
-                label={resource.label}
-                tone={resource.tone}
-                value={resource.value}
-              />
-            ))}
-          </div>
-        </section>
+      <div className="overview-delivery-tracks">
+        <DeliveryTrack label="训练交付" stages={trainingLifecycle} onOpen={(stage) => goTo(stage.page, {
+          deliveryKind: "training",
+          trainingJobId: latestTraining?.id,
+          modelVersionId: latestTraining?.model_version_id,
+          benchmarkRunId: null,
+          deploymentId: null,
+        })} />
+        <DeliveryTrack label="推理交付" stages={inferenceLifecycle} onOpen={(stage) => {
+          const releasing = stage.page === "release";
+          goTo(stage.page, {
+            deliveryKind: "inference",
+            modelId: releasing ? latestDeployment?.metadata.model_id : evidenceModelID,
+            benchmarkRunId: releasing ? latestDeployment?.metadata.benchmark_run_id : evidence.data?.inference?.benchmark?.run_id,
+            modelVersionId: releasing ? latestDeployment?.metadata.model_version_id : null,
+            deploymentId: releasing ? latestDeployment?.id : null,
+            trainingJobId: null,
+          });
+        }} />
       </div>
 
-      <div className="dashboard-mid-grid">
-        <section className="infra-panel dashboard-service-panel">
-          <PanelHeader title="关键服务状态" action={serviceCount != null ? `共 ${serviceCount} 个服务` : undefined} />
-          <div className="dashboard-service-table">
-            <div className="dashboard-service-row header">
-              <span>服务</span>
-              <span>状态</span>
-              <span>请求量 (QPS)</span>
-              <span>P95 延迟</span>
-              <span>错误率</span>
-              <span>可用性</span>
-              <span>操作</span>
-            </div>
-            {metricsQuery.isLoading ? (
-              <Skeleton rows={4} />
-            ) : metricsQuery.isError ? (
-              <ErrorState error={metricsQuery.error} onRetry={metricsQuery.refetch} />
-            ) : serviceRows.length === 0 ? (
-              <EmptyState title="暂无服务指标" description="等待 endpoint 指标采集" />
-            ) : (
-              serviceRows.map((row) => (
-                <div className="dashboard-service-row" key={row.id}>
-                  <div className="dashboard-service-name">
-                    <ServiceGlyph tone={row.tone} />
-                    <div>
-                      <strong>{row.name}</strong>
-                      <small>{row.subtitle}</small>
-                    </div>
-                  </div>
-                  <StatusBadge status={row.status} />
-                  <div className="dashboard-qps-cell">
-                    <Sparkline values={row.trend} tone={row.tone} width={74} height={28} />
-                    <strong>{compact(row.qps, 0)}</strong>
-                  </div>
-                  <strong className={cn(row.p95 > 500 && "danger-text", row.p95 > 250 && row.p95 <= 500 && "warning-text")}>{fmt(row.p95, 0)}ms</strong>
-                  <strong className={cn(row.errorRate > 0.02 && "danger-text", row.errorRate > 0.005 && row.errorRate <= 0.02 && "warning-text")}>{fmt(row.errorRate * 100, 2)}%</strong>
-                  <strong className={cn(row.availability < 99 && "danger-text", row.availability >= 99 && row.availability < 99.9 && "warning-text")}>{fmt(row.availability, 2)}%</strong>
-                  <div className="dashboard-service-actions">
-                    <button aria-label={`打开 ${row.name}`} onClick={() => setPage("services")} title="打开服务" type="button"><Play size={13} /></button>
-                    <button aria-label={`${row.name} 更多操作`} onClick={() => setPage("observability")} title="更多操作" type="button"><MoreVertical size={13} /></button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          <button className="dashboard-link-button" onClick={() => setPage("services")} type="button">
-            查看全部服务{serviceCount != null ? ` (${serviceCount})` : ""}
-          </button>
-        </section>
-
-        <section className="infra-panel dashboard-quick-panel">
-          <PanelHeader title="快速入口" action="常用能力" />
-          <div className="dashboard-entry-grid">
-            {dashboardSnapshot.quickEntries.map((entry) => (
-              <QuickEntry
-                description={entry.description}
-                icon={entryIcon(entry.id)}
-                key={entry.id}
-                onClick={() => setPage(entry.page as Page)}
-                title={entry.title}
-              />
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <div className="dashboard-bottom-grid">
-        <section className="infra-panel dashboard-deploy-panel">
-          <PanelHeader title="最近部署" action="部署流水线" />
-          <div className="dashboard-deploy-table">
-            <div className="dashboard-deploy-row header">
-              <span>流水线</span>
-              <span>版本</span>
-              <span>环境</span>
-              <span>状态</span>
-              <span>时间</span>
-              <span>操作</span>
-            </div>
-            {deploymentsQuery.isLoading ? (
-              <Skeleton rows={3} />
-            ) : deploymentsQuery.isError ? (
-              <ErrorState error={deploymentsQuery.error} onRetry={deploymentsQuery.refetch} />
-            ) : deploymentRows.length === 0 ? (
-              <EmptyState title="暂无部署记录" />
-            ) : (
-              deploymentRows.map((row) => (
-                <div className="dashboard-deploy-row" key={row.id}>
-                  <strong>{row.pipeline}</strong>
-                  <span>{row.version}</span>
-                  <span>{row.env}</span>
-                  <StatusBadge status={row.status} />
-                  <span>{row.time}</span>
-                  <button aria-label={`打开 ${row.pipeline}`} onClick={() => setPage("pipelines")} title="打开部署" type="button"><Play size={13} /></button>
-                </div>
-              ))
-            )}
-          </div>
-          <button className="dashboard-link-button" onClick={() => setPage("pipelines")} type="button">
-            查看全部部署
-          </button>
-        </section>
-
-        <section className="infra-panel dashboard-weekly-panel">
-          <PanelHeader title="资源趋势" action={`近 ${samples.length || 0} 个采样点`} />
-          <div className="dashboard-weekly-grid">
-            {weeklyTrend.length === 0 ? (
-              <EmptyState title="暂无历史采样" description="等待 metrics 历史样本累积" />
-            ) : (
-              weeklyTrend.map((item) => (
-                <div className="dashboard-weekly-card" key={item.id}>
-                  <span>{item.label}</span>
-                  <strong>{item.value}</strong>
-                  {item.delta && <small className={item.delta.startsWith("↑") ? "up" : "down"}>{item.delta}</small>}
-                  <Sparkline values={item.values} tone={item.tone} width={160} height={46} />
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-      </div>
-
-      <section className="infra-panel dashboard-core-strip">
-        <PanelHeader title="AI Serving 核心指标" action="近 10 分钟窗口" />
-        <div className="dashboard-core-metric-row">
-          <CoreMetric label="总请求" value={show(reqCount, (v) => compact(v, 0))} detail="request_count" values={reqSeries} tone="info" />
-          <CoreMetric label="QPS" value={show(qps, (v) => fmt(v, 1))} detail="实时吞吐" values={qpsSeries} tone="info" />
-          <CoreMetric label="错误率" value={show(errorRate, (v) => `${fmt(v * 100, 2)}%`)} detail="请求失败" values={errSeries} tone={(errorRate ?? 0) > 0.01 ? "danger" : "success"} />
-          <CoreMetric label="P95 延迟" value={show(p95, (v) => `${fmt(v, 0)}ms`)} detail={`TTFT ${show(ttft, (v) => `${fmt(v, 0)}ms`)}`} values={p95Series} tone={(p95 ?? 0) > 250 ? "warning" : "success"} />
-          <CoreMetric label="解码吞吐" value={show(throughput, (v) => compact(v, 0))} detail="tok/s" values={tpsSeries} tone="info" />
-          <div className="dashboard-core-donut">
-            <Donut value={gpuUtil ?? 0} max={100} size={64} thickness={7} tone={gpuTone} />
-            <div>
-              <strong>GPU</strong>
-              <span>{show(gpuUtil, (v) => pct(v, 0))} 利用率</span>
-            </div>
-          </div>
+      <section className={`gpu-channel ${channel}`}>
+        <div className="gpu-channel-title"><Cpu size={19} /><span><strong>GPU 执行通道</strong><small>训练微调与 27B 推理服务分时使用双卡，不要求同时运行</small></span></div>
+        <div className="gpu-channel-owner">
+          {channel === "training" ? <GraduationCap size={17} /> : channel === "inference" ? <Gauge size={17} /> : channel === "conflict" ? <AlertTriangle size={17} /> : <Square size={15} />}
+          <span><strong>{channelLabel(channel)}</strong><small>{channelDetail(channel, activeTraining?.name, runtime.data)}</small></span>
         </div>
+        <div className="gpu-channel-metrics"><span>GPU 利用率 <strong>{metric(gpuUtil, "%")}</strong></span><span>显存占用 <strong>{metric(gpuMemory, "%")}</strong></span></div>
       </section>
+
+      <div className="overview-kpi-strip">
+        <Kpi label="训练任务" value={String(jobs.length)} detail={latestTraining ? `${latestTraining.status} · ${relativeTime(latestTraining.updated_at)}` : "暂无任务"} />
+        <Kpi label="模型版本" value={String(versions.length)} detail={`${activeVersions} 个 active`} />
+        <Kpi label="P95 TTFT" value={benchmark.ttft == null ? "—" : `${fmt(benchmark.ttft, 0)} ms`} detail={benchmark.scenarioCount ? `${benchmark.scenarioCount} 个压测场景最大值` : "等待压测"} tone="blue" />
+        <Kpi label="P95 TPOT" value={benchmark.tpot == null ? "—" : `${fmt(benchmark.tpot, 1)} ms`} detail="已完成场景最大值" tone="blue" />
+        <Kpi label="请求成功率" value={benchmark.success == null ? "—" : `${fmt(benchmark.success * 100, 1)}%`} detail={`输出正确性 ${benchmark.quality == null ? "—" : `${fmt(benchmark.quality * 100, 1)}%`}`} tone={benchmark.success != null && benchmark.success < 0.99 ? "orange" : "green"} />
+        <Kpi label="待处理事件" value={String(openIncidents.length)} detail={openIncidents[0]?.title || "无未解决事件"} tone={openIncidents.length ? "orange" : "green"} />
+      </div>
+
+      <div className="overview-workbench-grid">
+        <Workflow
+          icon={GraduationCap}
+          title="训练任务控制面"
+          model="Qwen3.5-4B"
+          state={activeTraining ? `执行中 · ${activeTraining.name}` : latestTraining ? `最近 ${latestTraining.status}` : "待启动"}
+          detail="DianJin-CSC 客服数据 · LoRA / PEFT · Kubeflow PyTorchJob"
+          action="进入训练"
+          onClick={() => goTo("training", { deliveryKind: "training", trainingJobId: latestTraining?.id, modelVersionId: latestTraining?.model_version_id, benchmarkRunId: null, deploymentId: null })}
+        />
+        <Workflow
+          icon={Gauge}
+          title="推理服务控制面"
+          model={runtime.data?.model || evidenceModelID || "Qwen3.6-27B"}
+          state={runtime.data?.status || "未启动"}
+          detail={`${runtime.data?.profile || "baseline"} · Prefix Cache ${runtime.data?.prefix_caching ? "ON" : "OFF"} · 1K/2K × C1-C16`}
+          action="进入实验"
+          onClick={() => goTo("benchmarks", { deliveryKind: "inference", modelId: evidenceModelID, benchmarkRunId: evidence.data?.inference?.benchmark?.run_id, trainingJobId: null })}
+        />
+        <Workflow
+          icon={Rocket}
+          title="模型发布上线"
+          model={latestDeployment?.name || "等待可发布版本"}
+          state={latestDeployment?.metadata.phase || latestDeployment?.status || "待发布"}
+          detail={latestDeployment ? `${latestDeployment.env || "-"} · ${latestDeployment.version || "latest"} · ${relativeTime(latestDeployment.started_at)}` : "版本门禁 · K8s rollout · 失败自动回滚"}
+          action="进入发布"
+          onClick={() => goTo("release", { deliveryKind: "inference", modelVersionId: latestDeployment?.metadata.model_version_id, benchmarkRunId: latestDeployment?.metadata.benchmark_run_id, deploymentId: latestDeployment?.id, trainingJobId: null })}
+        />
+        <Workflow
+          icon={Bot}
+          title="智能诊断"
+          model={openIncidents.length ? `${openIncidents.length} 个待处理事件` : "当前无未解决事件"}
+          state={openIncidents[0]?.severity || "healthy"}
+          detail={openIncidents[0]?.summary || "训练证据、推理压测、运行日志、K8s 与 GPU 指标统一诊断"}
+          action="进入诊断"
+          onClick={() => goTo("aiOps", channel === "training" ? { deliveryKind: "training", trainingJobId: latestTraining?.id, benchmarkRunId: null, deploymentId: null, diagnosisId: null } : { deliveryKind: "inference", benchmarkRunId: evidence.data?.inference?.benchmark?.run_id, trainingJobId: null, diagnosisId: null })}
+        />
+      </div>
+
+      <div className="overview-bottom-grid">
+        <section className="infra-panel overview-scenario-panel">
+          <PanelHeader title="最近推理验收矩阵" action={evidence.data?.inference?.benchmark?.run_id ? `run ${evidence.data.inference.benchmark.run_id.slice(0, 8)}` : "暂无正式结果"} />
+          {evidence.isLoading ? <Skeleton rows={3} /> : evidence.isError || !scenarios.length ? <EmptyState title="暂无已完成压测" description="启动 vLLM 后在推理服务控制面运行 1K/2K × 1-16 并发矩阵" /> : (
+            <div className="overview-scenario-table">
+              <div className="overview-scenario-row header"><span>上下文</span><span>并发</span><span>TTFT P95</span><span>TPOT P95</span><span>端到端 P95</span><span>吞吐</span><span>成功 / 正确</span></div>
+              {scenarios.slice(0, 10).map((row, index) => <div className="overview-scenario-row" key={`${row.context_length}-${row.concurrency}-${index}`}><strong>{row.context_length ?? "-"}</strong><span>{row.concurrency ?? "-"}</span><span>{ms(row.p95_ttft_ms)}</span><span>{ms(row.p95_tpot_ms, 1)}</span><span>{ms(row.p95_ms)}</span><span>{throughput(row)} tok/s</span><span><StatusBadge status={Number(row.success_rate ?? 0) >= 0.99 && Number(row.quality_gate_pass_rate ?? 0) >= 0.99 ? "通过" : "未通过"} /></span></div>)}
+            </div>
+          )}
+        </section>
+        <section className="infra-panel overview-infra-panel">
+          <PanelHeader title="平台底座" action="次级能力" />
+          <InfraLink icon={Server} title="服务目录" detail={`${metrics.data?.service_instances?.length ?? 0} 个运行实例`} onClick={() => setPage("services")} />
+          <InfraLink icon={Activity} title="可观测中心" detail={metrics.data ? `QPS ${fmt(metrics.data.qps ?? 0, 1)} · P95 ${metrics.data.p95_latency_ms == null ? "—" : `${fmt(metrics.data.p95_latency_ms, 0)} ms`}` : "等待指标"} onClick={() => setPage("observability")} />
+          <InfraLink icon={Boxes} title="集群与资源" detail={metrics.data?.kubernetes?.available ? `${metrics.data.kubernetes.pods.length} Pods` : "集群状态不可用"} onClick={() => setPage("kubernetes")} />
+        </section>
+      </div>
     </section>
   );
 }
 
-function deriveServiceRows(metrics: Metrics | null): ServiceRow[] {
-  if (!metrics?.endpoint_stats?.length) return [];
-  const statusByName = new Map((metrics.service_instances ?? []).map((item) => [item.name, item.status]));
-  const windowSeconds = metrics.window_seconds || 600;
-  return metrics.endpoint_stats.slice(0, 5).map((item, index) => {
-    const p95 = item.p95_latency_ms ?? item.mean_latency_ms ?? 0;
-    const errorRate = item.error_rate ?? 0;
-    const availability = Math.max(0, 100 - errorRate * 100);
-    const tone: TrendTone = errorRate > 0.02 ? "danger" : p95 > 250 ? "warning" : "info";
-    return {
-      id: item.name || `endpoint-${index}`,
-      name: item.name || `服务 ${index + 1}`,
-      subtitle: statusByName.get(item.name) || "endpoint",
-      status: errorRate > 0.02 ? "异常" : p95 > 250 ? "降级" : "正常",
-      qps: item.request_count / windowSeconds,
-      p95,
-      errorRate,
-      availability,
-      tone,
-      trend: [],
-    };
-  });
+function DeliveryTrack({ label, stages, onOpen }: { label: string; stages: Array<{ label: string; page: Page; icon: typeof Database }>; onOpen: (stage: { label: string; page: Page; icon: typeof Database }) => void }) {
+  return <section><header>{label}</header><div className="overview-lifecycle">
+    {stages.map((stage, index) => {
+      const Icon = stage.icon;
+      return <button key={`${label}-${stage.page}`} type="button" onClick={() => onOpen(stage)}><span>{String(index + 1).padStart(2, "0")}</span><Icon size={17} /><strong>{stage.label}</strong>{index < stages.length - 1 ? <ArrowRight className="overview-stage-arrow" size={14} /> : null}</button>;
+    })}
+  </div></section>;
 }
 
-function deriveDeployments(items: Deployment[]): DeployRow[] {
-  return items.slice(0, 3).map((item) => ({
-    id: item.id,
-    pipeline: item.name || "deployment",
-    version: item.version || "latest",
-    env: item.env || "dev",
-    status: item.status === "success" ? "成功" : item.status === "failed" ? "失败" : "运行中",
-    time: relativeTime(item.finished_at ?? item.started_at),
-  }));
+function Workflow({ icon: Icon, title, model, state, detail, action, onClick }: { icon: typeof Gauge; title: string; model: string; state: string; detail: string; action: string; onClick: () => void }) {
+  return <section className="workflow-item"><div className="workflow-item-head"><Icon size={18} /><span><strong>{title}</strong><small>{model}</small></span><StatusBadge status={state} /></div><p>{detail}</p><button type="button" onClick={onClick}>{action}<ArrowRight size={13} /></button></section>;
 }
 
-function deriveAlertBreakdown(incidents: Incident[]): Array<{ id: string; label: string; count: number; status: string; tone: string }> {
-  const counts = new Map<string, number>();
-  for (const inc of incidents) {
-    const key = (inc.severity || "unknown").toLowerCase();
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const labelFor = (k: string): string =>
-    ({ critical: "严重", high: "高", major: "重要", medium: "中", minor: "次要", low: "低", warning: "告警", info: "提示" } as Record<string, string>)[k] ?? k;
-  const toneFor = (k: string): string =>
-    k.includes("crit") ? "danger" : k.includes("high") || k.includes("warn") || k.includes("major") ? "warning" : k.includes("med") || k.includes("minor") || k.includes("info") ? "info" : "neutral";
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, count]) => ({ id: key, label: labelFor(key), count, status: "未解决", tone: toneFor(key) }));
+function Kpi({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail: string; tone?: string }) {
+  return <div className={tone}><span>{label}</span><strong>{value}</strong><small title={detail}>{detail}</small></div>;
 }
 
-function ResourceLine({ detail, label, tone, value }: { detail: string; label: string; tone: TrendTone; value: number | null }) {
-  const known = value != null && !Number.isNaN(value);
-  return (
-    <div className="dashboard-resource-line">
-      <span>{label}</span>
-      <div className="dashboard-resource-track">
-        <i className={tone} style={{ width: known ? `${Math.max(4, Math.min(100, value as number))}%` : "0%" }} />
-      </div>
-      <strong>{known ? `${fmt(value as number, 0)}%` : "—"}</strong>
-      <small>{detail}</small>
-    </div>
-  );
+function InfraLink({ icon: Icon, title, detail, onClick }: { icon: typeof Server; title: string; detail: string; onClick: () => void }) {
+  return <button type="button" onClick={onClick}><Icon size={17} /><span><strong>{title}</strong><small>{detail}</small></span><ArrowRight size={14} /></button>;
 }
 
-// 资源占用展示辅助。
-function utilTone(value: number | null): TrendTone {
-  if (value == null) return "info";
-  return value >= 90 ? "danger" : value >= 75 ? "warning" : "info";
+function summarizeScenarios(scenarios: Scenario[]) {
+  const max = (key: keyof Scenario) => scenarios.length ? Math.max(...scenarios.map((item) => Number(item[key] ?? 0))) : null;
+  const min = (key: keyof Scenario) => scenarios.length ? Math.min(...scenarios.map((item) => Number(item[key] ?? 0))) : null;
+  return { scenarioCount: scenarios.length, ttft: max("p95_ttft_ms"), tpot: max("p95_tpot_ms"), success: min("success_rate"), quality: min("quality_gate_pass_rate") };
 }
 
-function pickRootDisk(
-  disks: Array<{ path: string; total_bytes: number; used_bytes: number; free_bytes: number; used_percent: number | null }> | undefined
-): { used_bytes: number; total_bytes: number; used_percent: number | null } | null {
-  if (!disks?.length) return null;
-  const root = disks.find((d) => d.path === "/");
-  if (root) return root;
-  // 退而取容量最大的挂载点（通常是根/数据盘）。
-  return [...disks].sort((a, b) => b.total_bytes - a.total_bytes)[0];
+function channelLabel(channel: string) {
+  if (channel === "training") return "训练微调占用";
+  if (channel === "inference") return "推理服务占用";
+  if (channel === "conflict") return "检测到资源冲突";
+  return "当前空闲";
 }
 
-function ServiceGlyph({ tone }: { tone: TrendTone }) {
-  const Icon = tone === "danger" ? AlertTriangle : tone === "warning" ? Route : Server;
-  return (
-    <span className={cn("dashboard-service-glyph", tone)}>
-      <Icon size={14} />
-    </span>
-  );
+function channelDetail(channel: string, job?: string, runtime?: Runtime) {
+  if (channel === "training") return job || "PyTorchJob";
+  if (channel === "inference") return `${runtime?.model || "qwen36-27b-fp8"} · ${runtime?.profile || "baseline"}`;
+  if (channel === "conflict") return "请停止其中一侧，避免双卡显存争用";
+  return "可启动训练任务或 vLLM 推理服务";
 }
 
-function QuickEntry({
-  description,
-  icon: Icon,
-  onClick,
-  title,
-}: {
-  description: string;
-  icon: LucideIcon;
-  onClick: () => void;
-  title: string;
-}) {
-  return (
-    <button className="dashboard-entry-card" onClick={onClick} type="button">
-      <span><Icon size={20} /></span>
-      <div>
-        <strong>{title}</strong>
-        <small>{description}</small>
-      </div>
-    </button>
-  );
-}
-
-function entryIcon(id: string): LucideIcon {
-  const icons: Record<string, LucideIcon> = {
-    services: Server,
-    config: ShieldCheck,
-    pipelines: Route,
-    observability: Gauge,
-    aiOps: Activity,
-    knowledge: Layers,
-  };
-  return icons[id] ?? Home;
-}
-
-function CoreMetric({
-  detail,
-  label,
-  tone,
-  value,
-  values,
-}: {
-  detail: string;
-  label: string;
-  tone: TrendTone;
-  value: string;
-  values: number[];
-}) {
-  return (
-    <div className="dashboard-core-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-      <Sparkline values={values} tone={tone} width={108} height={34} />
-    </div>
-  );
-}
+function metric(value: number | null, suffix: string) { return value == null || !Number.isFinite(value) ? "—" : `${fmt(value, 0)}${suffix}`; }
+function ms(value?: number, digits = 0) { return value == null ? "—" : `${fmt(value, digits)} ms`; }
+function throughput(row: Scenario) { const value = row.output_throughput_tokens_per_second ?? row.output_tokens_per_second; return value == null ? "—" : fmt(value, 1); }
+function modelIDFromEndpoint(endpoint?: string) { return endpoint?.replace(/-vllm$/, ""); }

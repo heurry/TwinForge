@@ -100,12 +100,13 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusUnauthorized, "invalid_credentials", "用户名或口令错误")
 		return
 	}
-	token, exp := a.Auth.Issue(u.Subject, u.Role)
+	token, exp := a.Auth.IssueForTenant(u.Subject, u.Role, u.TenantID)
 	a.Store.Audit(r.Context(), u.Subject, u.Role, "auth.login", "user", u.Subject, map[string]any{})
 	WriteJSON(w, http.StatusOK, map[string]any{
 		"token":      token,
 		"subject":    u.Subject,
 		"role":       u.Role,
+		"tenant_id":  u.TenantID,
 		"expires_at": exp.UTC().Format("2006-01-02T15:04:05Z07:00"),
 	})
 }
@@ -117,6 +118,7 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	if u != nil {
 		resp["subject"] = u.Subject
 		resp["role"] = u.Role
+		resp["tenant_id"] = u.TenantID
 	}
 	WriteJSON(w, http.StatusOK, resp)
 }

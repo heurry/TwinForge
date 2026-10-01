@@ -1,0 +1,19 @@
+# Offline/local fallback. It reuses the previously cached build and runtime
+# stages; the normal reproducible image remains Dockerfile.
+ARG BUILD_IMAGE=twinforge-agent-platform-build:latest
+ARG RUNTIME_IMAGE=cloudnative-infra-platform-agent-api:latest
+
+FROM ${BUILD_IMAGE} AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 /usr/local/go/bin/go build -o /out/agent-api ./cmd/agent-api && \
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o /out/agent-worker ./cmd/agent-worker && \
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o /out/agent-sandbox ./cmd/agent-sandbox && \
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o /out/agent-migrate ./cmd/agent-migrate
+
+FROM ${RUNTIME_IMAGE}
+WORKDIR /app
+COPY --from=build /out/agent-api /out/agent-worker /out/agent-sandbox /out/agent-migrate /app/
+COPY migrations /app/migrations
+USER 65532:65532
+ENTRYPOINT ["/app/agent-api"]
