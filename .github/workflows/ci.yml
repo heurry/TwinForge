@@ -14,8 +14,8 @@ jobs:
     env:
       GOWORK: "off" # 按模块独立构建（与本地 Docker 构建一致）
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.22"
           cache-dependency-path: server/go.sum
@@ -31,8 +31,8 @@ jobs:
     env:
       GOWORK: "off"
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.22"
           cache-dependency-path: agent/go.sum
@@ -45,7 +45,7 @@ jobs:
   sqlc-verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: sqlc-dev/setup-sqlc@v5
         with:
           sqlc-version: "1.27.0"
@@ -59,8 +59,8 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -74,8 +74,8 @@ jobs:
   ai-service:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: install / test
@@ -87,7 +87,7 @@ jobs:
   helm-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.4
@@ -123,8 +123,8 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.22"
           cache-dependency-path: server/go.sum
