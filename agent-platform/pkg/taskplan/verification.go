@@ -198,6 +198,13 @@ func normalizeUpdate(update Update, sanitizePlatformState bool) (Update, error) 
 			criterion := &update.Steps[stepIndex].AcceptanceCriteria[criterionIndex]
 			criterion.Enforcement = effectiveEnforcement(criterion.Enforcement)
 			criterion.Origin = effectiveOrigin(criterion.Origin)
+			// A skipped advisory is a durable policy decision, not a verification
+			// attempt. Re-validating its retired/unsupported provider would turn it
+			// back into unsupported during every Plan normalization and erase the
+			// recovery decision that revise_verification just committed.
+			if criterion.Status == CriterionSkipped && !criterion.BlocksCompletion() {
+				continue
+			}
 			normalized, err := NormalizeCriterionVerification(criterion.Description, criterion.Verification)
 			if err != nil {
 				if criterion.BlocksCompletion() {

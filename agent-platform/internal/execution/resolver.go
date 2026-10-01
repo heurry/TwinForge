@@ -946,12 +946,16 @@ func (r *Resolver) ResolveToolsWithExtra(ctx context.Context, run agent.Run, ref
 		actionToolNames = append(actionToolNames, definition.Name)
 	}
 	sort.Strings(actionToolNames)
-	planDescription := "Use first for a substantive task that will edit files, run commands, or require verifiable multi-step work. Create the Workflow-owned durable execution plan with one outcome-oriented step per meaningful phase and observable acceptance criteria. For an existing Plan, do not rebuild it for ordinary progress: use update_plan_step or revise_verification. Full mutation requires base_revision and change_mode=extend|replan; replan also requires replan_reason and must preserve unfinished nodes or explicitly retire each removed node with a reason. Do not put platform fields, receipt IDs, exit_code, working_directory, or UI state into this request. Available action tools: " + strings.Join(actionToolNames, ", ")
+	verificationKinds := taskplan.VerificationKinds()
+	verificationGuide := " Registered verification kinds: " + strings.Join(verificationKinds, ", ") + ". Every step must retain at least one executable criterion. Use file_exists/list_nonempty/search_nonempty/python_syntax with target; file_contains with target and match; command_exit_zero/test_pass with structured run_command arguments; tool_success with an optional exact tool; tool_receipt with tool and assertions."
+	planDescription := "Use first for a substantive task that will edit files, run commands, or require verifiable multi-step work. Create the Workflow-owned durable execution plan with one outcome-oriented step per meaningful phase and observable acceptance criteria. For an existing Plan, do not rebuild it for ordinary progress: use update_plan_step or revise_verification. Full mutation requires base_revision and change_mode=extend|replan; replan also requires replan_reason and must preserve unfinished nodes or explicitly retire each removed node with a reason. Do not put platform fields, receipt IDs, exit_code, working_directory, or UI state into this request. Available action tools: " + strings.Join(actionToolNames, ", ") + "." + verificationGuide
 	planDefinition := tool.Definition{Name: "update_plan", Version: "12", Description: planDescription, Risk: tool.RiskRead, ExecutionMode: tool.ExecutionSerial, InputSchema: json.RawMessage(`{"type":"object","required":["goal","steps"],"properties":{"goal":{"type":"string","minLength":1},"explanation":{"type":"string"},"change_mode":{"enum":["create","extend","replan"]},"base_revision":{"type":"integer","minimum":1},"replan_reason":{"type":"string","minLength":1,"maxLength":2000},"retired_steps":{"type":"array","maxItems":8,"items":{"type":"object","required":["id","reason"],"properties":{"id":{"type":"string","minLength":1},"reason":{"type":"string","minLength":1,"maxLength":1000}},"additionalProperties":false}},"steps":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","required":["id","description","status","acceptance_criteria"],"properties":{"id":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"status":{"enum":["pending","in_progress"]},"assignee":{"type":"string"},"agent_version_id":{"type":"string"},"depends_on":{"type":"array","items":{"type":"string"}},"tool_hints":{"type":"array","maxItems":12,"uniqueItems":true,"items":{"type":"string","minLength":1}},"result":{"type":"string"},"acceptance_criteria":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","required":["id","description","status","verification"],"properties":{"id":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"status":{"const":"pending"},"verification":{"type":"object","required":["kind"],"properties":{"kind":{"type":"string","minLength":1},"target":{"type":"string"},"match":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"assertions":{"type":"array","minItems":1,"items":{"type":"object","required":["path","operator"],"properties":{"path":{"type":"string","minLength":1},"operator":{"enum":["equals","contains","nonempty"]},"value":{}},"additionalProperties":false}}},"additionalProperties":false}},"additionalProperties":false}}},"additionalProperties":false}}},"additionalProperties":false}`)}
 	// update_plan is a complete graph revision, not an append-only checklist.
 	// Keep the public contract aligned with taskplan.Update.Validate so one
 	// model response cannot grow an unbounded active graph.
+	planDefinition.Version = "13"
 	planDefinition.InputSchema = json.RawMessage(strings.Replace(string(planDefinition.InputSchema), `"maxItems":64`, `"maxItems":8`, 1))
+	planDefinition.InputSchema = constrainVerificationKinds(planDefinition.InputSchema, verificationKinds)
 	planDefinition.Description += " For command_exit_zero/test_pass, verification.arguments is authoritative. Use JSON number 0, not string \"0\", for run_command exit_code assertions."
 	if err := registry.Register(planDefinition, func(callCtx context.Context, call tool.Call) (tool.Result, error) {
 		var update taskplan.Update
@@ -968,6 +972,8 @@ func (r *Resolver) ResolveToolsWithExtra(ctx context.Context, run agent.Run, ref
 		return nil, err
 	}
 	planStepDefinition := tool.Definition{Name: "update_plan_step", Version: "4", Description: "Use after executing or verifying work to update exactly one existing Todo; do not create a new Plan and do not copy tool call IDs or platform receipts. Keep status in_progress when declared tools or evidence are insufficient, and replace tool_hints with the smallest corrected set before another action call. Mark completed only when the Runtime can match successful Tool evidence for the step and its criteria; mark blocked or skipped only with a truthful result. Updating a step activates the next ready Todo.", Risk: tool.RiskRead, ExecutionMode: tool.ExecutionSerial, InputSchema: json.RawMessage(`{"type":"object","required":["step_id","status"],"properties":{"step_id":{"type":"string","minLength":1},"status":{"enum":["in_progress","completed","blocked","skipped"]},"result":{"type":"string"},"tool_hints":{"type":"array","maxItems":12,"uniqueItems":true,"items":{"type":"string","minLength":1}},"acceptance_criteria":{"type":"array","maxItems":8,"items":{"type":"object","required":["id","status"],"properties":{"id":{"type":"string","minLength":1},"status":{"enum":["pending","passed","failed","skipped"]}},"additionalProperties":false}}},"additionalProperties":false}`)}
+	planStepDefinition.Version = "5"
+	planStepDefinition.InputSchema = constrainVerificationKinds(planStepDefinition.InputSchema, verificationKinds)
 	if err := registry.Register(planStepDefinition, func(callCtx context.Context, call tool.Call) (tool.Result, error) {
 		var mutation taskplan.StepUpdate
 		if err := json.Unmarshal(call.Arguments, &mutation); err != nil {
@@ -995,6 +1001,9 @@ func (r *Resolver) ResolveToolsWithExtra(ctx context.Context, run agent.Run, ref
 		return nil, err
 	}
 	revisionDefinition := tool.Definition{Name: "revise_verification", Version: "2", Description: "Use when exactly one acceptance criterion has an invalid, unsupported, failed, stale, or pending verification. Repair that criterion only; do not rebuild the Plan or alter unrelated progress. Use action=replace with a corrected registered verification contract, and provide only the fields allowed by its Schema. Use action=skip_advisory only when the check is genuinely unnecessary or unsupported; required and release gates cannot be skipped. base_revision is optional for ordinary repair and required when Runtime applies a Reviewer recommendation. Never repeat an unchanged failing Tool call when this repair tool is available.", Risk: tool.RiskRead, ExecutionMode: tool.ExecutionSerial, InputSchema: json.RawMessage(`{"type":"object","required":["step_id","criterion_id","action","reason"],"properties":{"step_id":{"type":"string","minLength":1},"criterion_id":{"type":"string","minLength":1},"action":{"enum":["replace","skip_advisory"]},"reason":{"type":"string","minLength":1,"maxLength":2000},"base_revision":{"type":"integer","minimum":1},"verification":{"type":"object","properties":{"kind":{"type":"string","minLength":1},"target":{"type":"string"},"match":{"type":"string"},"tool":{"type":"string"},"arguments":{"type":"object"},"assertions":{"type":"array","items":{"type":"object","required":["path","operator"],"properties":{"path":{"type":"string"},"operator":{"enum":["equals","contains","nonempty"]},"value":{}},"additionalProperties":false}}},"additionalProperties":false}},"additionalProperties":false}`)}
+	revisionDefinition.Version = "3"
+	revisionDefinition.Description += " skip_advisory is rejected when it would leave the step without another executable criterion; replace the criterion instead." + verificationGuide
+	revisionDefinition.InputSchema = constrainVerificationKinds(revisionDefinition.InputSchema, verificationKinds)
 	if err := registry.Register(revisionDefinition, func(callCtx context.Context, call tool.Call) (tool.Result, error) {
 		var revision taskplan.CriterionRevision
 		if err := json.Unmarshal(call.Arguments, &revision); err != nil {
@@ -1450,4 +1459,44 @@ func leaseFromRun(run agent.Run) (agent.Lease, error) {
 		return agent.Lease{}, errors.New("claimed run has no valid lease owner/token")
 	}
 	return agent.Lease{RunID: run.ID, Owner: *run.LeaseOwner, Token: run.LeaseToken}, nil
+}
+
+// constrainVerificationKinds projects the live provider registry into the
+// model-facing schema. The Registry remains extensible, while the model gets
+// an exact enum instead of having to guess what "registered provider" means.
+// It also removes uniqueItems because vLLM cannot compile that keyword; the
+// taskplan validator still enforces tool-hint uniqueness after the call.
+func constrainVerificationKinds(raw json.RawMessage, kinds []string) json.RawMessage {
+	if len(raw) == 0 || len(kinds) == 0 {
+		return raw
+	}
+	var schema any
+	if json.Unmarshal(raw, &schema) != nil {
+		return raw
+	}
+	var visit func(any)
+	visit = func(value any) {
+		switch current := value.(type) {
+		case map[string]any:
+			delete(current, "uniqueItems")
+			if properties, ok := current["properties"].(map[string]any); ok {
+				if kindSchema, ok := properties["kind"].(map[string]any); ok && kindSchema["type"] == "string" {
+					kindSchema["enum"] = append([]string(nil), kinds...)
+				}
+			}
+			for _, child := range current {
+				visit(child)
+			}
+		case []any:
+			for _, child := range current {
+				visit(child)
+			}
+		}
+	}
+	visit(schema)
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }

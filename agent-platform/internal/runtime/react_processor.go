@@ -1074,7 +1074,7 @@ func failureRecoveryContractHint(toolName, errorCode, message string) string {
 	case "update_plan":
 		return "update_plan must contain only model-owned goal, optional explanation, and 1-8 steps. Each criterion verification must exactly match the offered schema; do not add platform fields or invent verification properties"
 	case "revise_verification":
-		return "revise_verification only repairs one criterion: step_id, criterion_id, action, reason, and optional verification. verification permits only kind,target,match,tool,arguments,assertions; never include tool_hints, state, evidence, or receipt fields"
+		return "revise_verification only repairs one criterion: step_id, criterion_id, action, reason, and optional verification. verification permits only kind,target,match,tool,arguments,assertions; never include tool_hints, state, evidence, or receipt fields. Use action=replace with one of [" + strings.Join(taskplan.VerificationKinds(), ", ") + "]; skip_advisory cannot remove the step's only executable criterion"
 	default:
 		return ""
 	}
@@ -2328,14 +2328,15 @@ func (e *planRequiredToolExecutor) Execute(ctx context.Context, call tool.Call) 
 		// The repair stays local to the criterion; rebuilding the whole Plan would
 		// discard real progress and create another consistency problem.
 		if !isPlanFreeObservationTool(call.Name) && !planStepHasExecutableVerification(step) {
+			registeredKinds := strings.Join(taskplan.VerificationKinds(), ", ")
 			return tool.Result{}, tool.NewContractErrorWithRepair(
 				"PLAN_PROGRESS_CONTRACT_INVALID",
 				call.Name,
 				"/active_plan_step/acceptance_criteria",
-				"at least one criterion backed by a registered verification provider",
+				"at least one criterion backed by one of: "+registeredKinds,
 				"no executable verification contract",
 				fmt.Sprintf("plan step %q cannot be advanced from committed Tool receipts", step.ID),
-				fmt.Sprintf("Call revise_verification for a criterion on step %q using a registered provider, then retry this changed call. Do not recreate the Plan.", step.ID),
+				fmt.Sprintf("Call revise_verification action=replace for a criterion on step %q using one of [%s], then retry the changed call. Do not use skip_advisory when this is the only criterion and do not recreate the Plan.", step.ID, registeredKinds),
 				nil,
 				true,
 			)
@@ -2390,7 +2391,7 @@ func isPlanFreeObservationTool(name string) bool {
 func planStepHasExecutableVerification(step taskplan.Step) bool {
 	hasExecutable := false
 	for _, criterion := range step.AcceptanceCriteria {
-		invalid := criterion.Status == taskplan.CriterionInvalid || criterion.Status == taskplan.CriterionUnsupported || strings.TrimSpace(criterion.Verification.Kind) == ""
+		invalid := criterion.Status == taskplan.CriterionSkipped || criterion.Status == taskplan.CriterionInvalid || criterion.Status == taskplan.CriterionUnsupported || strings.TrimSpace(criterion.Verification.Kind) == ""
 		if !invalid {
 			invalid = taskplan.ValidateVerification(criterion.Verification) != nil
 		}
@@ -2669,6 +2670,27 @@ func validateExecutableVerificationContracts(update taskplan.Update, definitions
 		available[definition.Name] = definition
 	}
 	for _, step := range update.Steps {
+		if !planStepHasExecutableVerification(step) {
+			kinds := taskplan.VerificationKinds()
+			template, _ := json.Marshal(map[string]any{
+				"step_id": step.ID,
+				"acceptance_criteria": []any{map[string]any{
+					"id": "replace-with-executable-check", "status": "pending",
+					"verification": map[string]any{"kind": "file_exists", "target": "relative-output-path"},
+				}},
+			})
+			return tool.NewContractErrorWithRepair(
+				"PLAN_VERIFICATION_PROVIDER_REQUIRED",
+				"update_plan",
+				fmt.Sprintf("/steps/%s/acceptance_criteria", step.ID),
+				"at least one executable criterion using one of: "+strings.Join(kinds, ", "),
+				"all criteria are skipped, invalid, unsupported, or missing a verification kind",
+				fmt.Sprintf("plan step %q would be durable but impossible to advance", step.ID),
+				"Replace at least one criterion with a registered verification kind and its required fields. Do not skip the only criterion.",
+				template,
+				true,
+			)
+		}
 		for _, criterion := range step.AcceptanceCriteria {
 			if criterion.Status == taskplan.CriterionInvalid || criterion.Status == taskplan.CriterionUnsupported {
 				continue

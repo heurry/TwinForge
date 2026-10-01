@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,20 @@ import (
 	"github.com/heurry/cloudnative-infra-platform/agent-platform/pkg/taskplan"
 	"github.com/heurry/cloudnative-infra-platform/agent-platform/pkg/tool"
 )
+
+func TestConstrainVerificationKindsPublishesExactEnum(t *testing.T) {
+	raw := json.RawMessage(`{"type":"object","properties":{"tool_hints":{"type":"array","uniqueItems":true},"verification":{"type":"object","properties":{"kind":{"type":"string","minLength":1}}}}}`)
+	projected := constrainVerificationKinds(raw, []string{"file_exists", "python_syntax"})
+	if !strings.Contains(string(projected), `"enum":["file_exists","python_syntax"]`) {
+		t.Fatalf("verification kind enum missing from schema: %s", projected)
+	}
+	if strings.Contains(string(raw), `"enum"`) {
+		t.Fatal("schema projection mutated the authoritative input")
+	}
+	if strings.Contains(string(projected), "uniqueItems") {
+		t.Fatalf("vLLM-incompatible keyword remained in projected schema: %s", projected)
+	}
+}
 
 func TestWorkerExecutesVersionPinnedModelAndHTTPTool(t *testing.T) {
 	databaseURL := os.Getenv("TEST_AGENT_DATABASE_URL")

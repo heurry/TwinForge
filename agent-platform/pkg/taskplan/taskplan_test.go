@@ -568,3 +568,46 @@ func TestApplyCriterionRevisionCannotSkipRequired(t *testing.T) {
 		t.Fatal("expected release gate skip to be rejected")
 	}
 }
+
+func TestApplyCriterionRevisionRejectsSkippingOnlyAcceptancePath(t *testing.T) {
+	plan := Plan{Goal: "build", Steps: []Step{{
+		ID: "implement", Description: "implement", Status: StatusInProgress,
+		AcceptanceCriteria: []AcceptanceCriterion{{
+			ID: "legacy", Description: "legacy lint", Status: CriterionUnsupported,
+			Enforcement: EnforcementAdvisory, Verification: VerificationSpec{Kind: "lint"},
+		}},
+	}}}
+	_, err := ApplyCriterionRevision(plan, CriterionRevision{
+		StepID: "implement", CriterionID: "legacy", Action: "skip_advisory", Reason: "provider retired",
+	})
+	if err == nil || !strings.Contains(err.Error(), "replace this criterion") || !strings.Contains(err.Error(), "python_syntax") {
+		t.Fatalf("error = %v, want exact replace guidance with registered providers", err)
+	}
+}
+
+func TestApplyCriterionRevisionPersistsSkippedAdvisoryWhenAlternativeExists(t *testing.T) {
+	plan := Plan{Goal: "build", Steps: []Step{{
+		ID: "implement", Description: "implement", Status: StatusInProgress,
+		AcceptanceCriteria: []AcceptanceCriterion{
+			{ID: "legacy", Description: "legacy lint", Status: CriterionUnsupported, Enforcement: EnforcementAdvisory, Verification: VerificationSpec{Kind: "lint"}},
+			{ID: "exists", Description: "file exists", Status: CriterionPending, Enforcement: EnforcementAdvisory, Verification: VerificationSpec{Kind: "file_exists", Target: "main.py"}},
+		},
+	}}}
+	update, err := ApplyCriterionRevision(plan, CriterionRevision{
+		StepID: "implement", CriterionID: "legacy", Action: "skip_advisory", Reason: "replaced by file evidence",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := update.Steps[0].AcceptanceCriteria[0]
+	if skipped.Status != CriterionSkipped || skipped.VerificationReason != VerificationReasonPolicyOverridden || skipped.VerificationMessage != "replaced by file evidence" {
+		t.Fatalf("skipped advisory was not preserved: %+v", skipped)
+	}
+	normalized, err := NormalizeUpdate(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Steps[0].AcceptanceCriteria[0].Status != CriterionSkipped {
+		t.Fatalf("normalization revived skipped advisory: %+v", normalized.Steps[0].AcceptanceCriteria[0])
+	}
+}

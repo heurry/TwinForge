@@ -760,6 +760,24 @@ func TestPlanRequiredToolExecutorDoesNotBypassUnsupportedRequiredCriterion(t *te
 	}
 }
 
+func TestValidateExecutableVerificationContractsRejectsUnexecutablePlanAtCreation(t *testing.T) {
+	update, err := taskplan.NormalizeUpdate(taskplan.Update{Goal: "build", Steps: []taskplan.Step{{
+		ID: "implement", Description: "implement", Status: taskplan.StatusInProgress,
+		AcceptanceCriteria: []taskplan.AcceptanceCriterion{{
+			ID: "lint", Description: "lint succeeds", Status: taskplan.CriterionPending,
+			Verification: taskplan.VerificationSpec{Kind: "lint"},
+		}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = validateExecutableVerificationContracts(update, nil)
+	contractErr, ok := tool.AsContractError(err)
+	if !ok || contractErr.Code != "PLAN_VERIFICATION_PROVIDER_REQUIRED" || !strings.Contains(contractErr.Expected, "python_syntax") || !strings.Contains(contractErr.Correction, "Do not skip the only criterion") {
+		t.Fatalf("error = %#v, want executable-provider creation guard", err)
+	}
+}
+
 func TestExpandPlanToolHintsAddsChunkContinuation(t *testing.T) {
 	definitions := []tool.Definition{{Name: "write_file"}, {Name: "append_file"}, {Name: "edit_file"}, {Name: "run_command"}}
 	got := expandPlanToolHints([]string{"write_file", "run_command"}, definitions)

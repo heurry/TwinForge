@@ -697,7 +697,7 @@ func (u Update) Validate() error {
 			default:
 				return errors.New("invalid acceptance criterion origin")
 			}
-			if criterion.Status != CriterionInvalid && criterion.Status != CriterionUnsupported {
+			if criterion.Status != CriterionInvalid && criterion.Status != CriterionUnsupported && !(criterion.Status == CriterionSkipped && !criterion.BlocksCompletion()) {
 				if err := criterion.Verification.Validate(); err != nil {
 					return err
 				}
@@ -894,6 +894,9 @@ func ApplyCriterionRevision(plan Plan, revision CriterionRevision) (Update, erro
 		if criterion.BlocksCompletion() {
 			return Update{}, errors.New("required or release-gate verification cannot be skipped by the Agent")
 		}
+		if !hasExecutableCriterionExcept(steps[stepIndex].AcceptanceCriteria, criterionIndex) {
+			return Update{}, fmt.Errorf("cannot skip the only executable acceptance path for step %q; replace this criterion with one registered verification kind: %s", revision.StepID, strings.Join(VerificationKinds(), ", "))
+		}
 		criterion.Status = CriterionSkipped
 		criterion.VerificationReason = VerificationReasonPolicyOverridden
 		criterion.VerificationMessage = revision.Reason
@@ -916,6 +919,18 @@ func ApplyCriterionRevision(plan Plan, revision CriterionRevision) (Update, erro
 	}
 	update.BaseRevision = revision.BaseRevision
 	return update, nil
+}
+
+func hasExecutableCriterionExcept(criteria []AcceptanceCriterion, excluded int) bool {
+	for index, candidate := range criteria {
+		if index == excluded || candidate.Status == CriterionSkipped || candidate.Status == CriterionInvalid || candidate.Status == CriterionUnsupported || strings.TrimSpace(candidate.Verification.Kind) == "" {
+			continue
+		}
+		if ValidateVerification(candidate.Verification) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDependencyCycle(steps []Step) bool {

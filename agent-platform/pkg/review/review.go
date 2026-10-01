@@ -77,7 +77,7 @@ var outputSchema = json.RawMessage(`{
         "description":{"type":"string","maxLength":800},
         "reason":{"type":"string","minLength":1,"maxLength":800},
         "depends_on":{"type":"array","maxItems":16,"items":{"type":"string","maxLength":128}},
-        "tool_hints":{"type":"array","maxItems":12,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128}},
+        "tool_hints":{"type":"array","maxItems":12,"items":{"type":"string","minLength":1,"maxLength":128}},
         "acceptance_criteria":{"type":"array","maxItems":8,"items":{
           "type":"object","required":["id","description","verification"],
           "properties":{

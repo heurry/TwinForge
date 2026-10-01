@@ -2,10 +2,17 @@ package review
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/heurry/cloudnative-infra-platform/agent-platform/pkg/contract"
 )
+
+func TestOutputSchemaAvoidsUnsupportedGuidedDecodingKeywords(t *testing.T) {
+	if strings.Contains(string(OutputSchema()), "uniqueItems") {
+		t.Fatal("Reviewer schema contains vLLM-incompatible uniqueItems")
+	}
+}
 
 func TestOutputSchemaAndParserAgree(t *testing.T) {
 	raw := json.RawMessage(`{"verdict":"changes_required","summary":"接口不一致","findings":[{"severity":"high","summary":"签名不一致","evidence":"db.py:20 的参数与调用方不同","path":"db.py","line":20,"recommendation":"统一接口"}],"recommended_plan_changes":[{"operation":"modify_step","step_id":"implement-db","description":"统一数据库接口","reason":"先统一接口"}]}`)

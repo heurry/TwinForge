@@ -91,6 +91,50 @@ func TestCompleteExplicitlyDisablesToolsWhenNoneAreOffered(t *testing.T) {
 	}
 }
 
+func TestCompleteRemovesUnsupportedGrammarKeywordsFromToolProjection(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.ToolChoice != "required" || len(request.Tools) != 1 {
+			t.Fatalf("request tool policy = %q tools=%d", request.ToolChoice, len(request.Tools))
+		}
+		var projected map[string]any
+		if err := json.Unmarshal(request.Tools[0].Function.Parameters, &projected); err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := json.Marshal(projected)
+		if strings.Contains(string(encoded), "uniqueItems") {
+			t.Fatalf("unsupported keyword reached provider: %s", encoded)
+		}
+		properties := projected["properties"].(map[string]any)
+		items := properties["tool_hints"].(map[string]any)
+		if items["maxItems"] != float64(12) {
+			t.Fatalf("supported constraints were lost: %#v", items)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"qwen","choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"plan-1","type":"function","function":{"name":"update_plan","arguments":"{}"}}]}}]}`))
+	}))
+	defer server.Close()
+	provider, err := New(Config{Endpoint: server.URL, Model: "qwen", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := json.RawMessage(`{"type":"object","properties":{"tool_hints":{"type":"array","maxItems":12,"uniqueItems":true,"items":{"type":"string"}}}}`)
+	if _, err := provider.Complete(context.Background(), model.Request{
+		Messages:   []model.Message{{Role: model.RoleUser, Content: "replan"}},
+		Tools:      []model.ToolSchema{{Name: "update_plan", Parameters: original}},
+		ToolChoice: "required",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(original), "uniqueItems") {
+		t.Fatal("provider mutated the authoritative Runtime schema")
+	}
+}
+
 func TestNewPreservesCompleteEndpoint(t *testing.T) {
 	t.Parallel()
 	provider, err := New(Config{Endpoint: "http://model.local/v1/chat/completions", Model: "qwen"})

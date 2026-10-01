@@ -89,7 +89,7 @@ func (p *Provider) Complete(ctx context.Context, request model.Request) (model.R
 	for _, schema := range request.Tools {
 		payload.Tools = append(payload.Tools, chatTool{
 			Type:     "function",
-			Function: chatFunction{Name: schema.Name, Description: schema.Description, Parameters: schema.Parameters},
+			Function: chatFunction{Name: schema.Name, Description: schema.Description, Parameters: grammarCompatibleToolSchema(schema.Parameters)},
 		})
 	}
 	body, err := json.Marshal(payload)
@@ -144,6 +144,43 @@ func (p *Provider) Complete(ctx context.Context, request model.Request) (model.R
 			TotalTokens: decoded.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// grammarCompatibleToolSchema removes assertion-only JSON Schema keywords
+// which are enforced by the Runtime but are not implemented by every
+// OpenAI-compatible guided-decoding backend. In particular, vLLM rejects a
+// required tool request before generation when a nested schema contains
+// uniqueItems. The authoritative Registry still validates the original schema,
+// so removing this keyword from the provider projection does not weaken the
+// execution contract.
+func grammarCompatibleToolSchema(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return raw
+	}
+	stripUnsupportedGrammarKeywords(schema)
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func stripUnsupportedGrammarKeywords(value any) {
+	switch current := value.(type) {
+	case map[string]any:
+		delete(current, "uniqueItems")
+		for _, child := range current {
+			stripUnsupportedGrammarKeywords(child)
+		}
+	case []any:
+		for _, child := range current {
+			stripUnsupportedGrammarKeywords(child)
+		}
+	}
 }
 
 func completionURL(endpoint string) (string, error) {
